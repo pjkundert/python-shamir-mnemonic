@@ -409,7 +409,7 @@ def group_ems_mnemonics(
                     except Exception:
                         pass
             # No more encrypted master secrets; return the remaining (unused) RawShares
-            return None, sum((possibles[gn].keys() for gn in possibles), [])
+            return None, sum((list(possibles[gn]) for gn in possibles), [])
 
         # Yields every encrypted master secret recovered, and the group indices and set of Share
         # mnemonics used to recover it.  This will be a minimal subset of the groups and mnemonics
