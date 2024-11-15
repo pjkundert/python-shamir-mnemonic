@@ -293,7 +293,7 @@ def _recover_secret(threshold: int, shares: Sequence[RawShare]) -> bytes:
 
 
 def group_ems_mnemonics(
-    mnemonics: Iterable[Union[str, Share]]
+    mnemonics: Iterable[Union[str, Share]], strict: bool = False
 ) -> Sequence[Tuple[EncryptedMasterSecret, Dict[int, Sequence[Share]]]]:
     """Attempt to yield a sequence of unique decoded EncryptedMasterSecret, and the dictionary of group
     indices -> set(<Share>) used to recover each SLIP-39 encoded encrypted seed.
@@ -310,6 +310,8 @@ def group_ems_mnemonics(
     Even if groups of mnemonics from multiple SLIP-39 encodings are collected, aid the caller in
     recovery of any/all of them.
 
+    Ignores invalid Mnemonics and absence of a recovered secret unless strict is specified.
+
     """
     # Eliminate any obviously flawed Mnemonics, group by distinct common, then group parameters
     common_params: Dict[
@@ -320,7 +322,8 @@ def group_ems_mnemonics(
             if isinstance(share, str):
                 share = Share.from_mnemonic(share)
         except Exception:
-            pass
+            if strict:
+                raise
         else:
             # We will cluster shares by distinct common_parameters (identifier, extendable,
             # iteration_exponent, group_threshold, group_count), then by group_parameters.  This allows
@@ -329,8 +332,7 @@ def group_ems_mnemonics(
             common_params.setdefault(
                 share.common_parameters(), {}  # incompatible SLIP-39 configurations
             ).setdefault(
-                share.group_parameters(),
-                ShareGroup(),  # ostensibly compatible mnemonics
+                share.group_parameters(), ShareGroup()  # compatible mnemonics
             ).add(
                 share  # Cannot fail
             )
@@ -425,6 +427,9 @@ def group_ems_mnemonics(
             if ems and ems not in recovered:
                 yield ems, groups
                 recovered.add(ems)
+
+    if strict and not recovered:
+        raise MnemonicError("Invalid set of mnemonics; No encoded secret found")
 
 
 def decode_mnemonics(mnemonics: Iterable[str]) -> Dict[int, ShareGroup]:
