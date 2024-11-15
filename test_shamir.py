@@ -1,6 +1,5 @@
 import json
 import secrets
-import pytest
 from itertools import combinations
 from random import shuffle
 

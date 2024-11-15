@@ -319,7 +319,7 @@ def group_ems_mnemonics(
         try:
             if isinstance(share, str):
                 share = Share.from_mnemonic(share)
-        except Exception as exc:
+        except Exception:
             pass
         else:
             # We will cluster shares by distinct common_parameters (identifier, extendable,
@@ -363,7 +363,7 @@ def group_ems_mnemonics(
                             groupings.member_threshold, shareminimal.to_raw_shares()
                         ),
                     )
-                except:
+                except Exception:
                     pass
                 else:
                     possibles.setdefault(
@@ -404,7 +404,7 @@ def group_ems_mnemonics(
                             _recover_secret(distinct.group_threshold, rawshares),
                         )
                         return ems, rawshares
-                    except:
+                    except Exception:
                         pass
             # No more encrypted master secrets; return the remaining (unused) RawShares
             return None, sum((possibles[gn].keys() for gn in possibles), [])
