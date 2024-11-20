@@ -1,6 +1,13 @@
 python-shamir-mnemonic
 ======================
 
+> This is a temporary upgrade shim for https://github.com/trezor/python-shamir-mnemonic
+
+> Install `shamir_mnemonic` via `python -m pip install shamir-mnemonic-slip39`,
+> until the upstream https://pypi.org/project/shamir-mnemonic is upgraded to include
+> recovery of arbitrary SLIP-39 Mnemonic groups.
+
+
 .. image:: https://badge.fury.io/py/shamir-mnemonic.svg
     :target: https://badge.fury.io/py/shamir-mnemonic
 
