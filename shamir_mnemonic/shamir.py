@@ -416,9 +416,13 @@ def group_ems_mnemonics(
         # supplied.
         while len(possibles) >= distinct.group_threshold:
             ems, rawshares = ems_rawshares()
-            # Remove all {RawShare: ShareGroup} used from possibles, and return as {group#: Sequence[Share]}
+            # Remove all {RawShare: ShareGroup} used from possibles, and return as {group#:
+            # Sequence[Share]} Each group's set's shares are ordered by index, for testing
+            # repeatability and ordering compatibility with other ..._ems functions.
             groups = {
-                rawshare.x: list(possibles[rawshare.x].pop(rawshare).shares)
+                rawshare.x: sorted(
+                    possibles[rawshare.x].pop(rawshare).shares, key=lambda s: s.index
+                )
                 for rawshare in rawshares
             }
             for x in list(possibles):

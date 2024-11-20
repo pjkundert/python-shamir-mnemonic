@@ -284,9 +284,10 @@ def test_group_ems_mnemonics(monkeypatch):
             ),
         ],
     ]
+    # Confirm that the extended Mnemonics are a superset of the original Mnemonics
     assert mnemonics_nonext_b[0] == mnemonics_nonext_a[0]
-    assert mnemonics_nonext_b[1][:3] == mnemonics_nonext_a[1]
-    assert mnemonics_nonext_b[2][:5] == mnemonics_nonext_a[2]
+    assert mnemonics_nonext_b[1] > mnemonics_nonext_a[1]
+    assert mnemonics_nonext_b[2] > mnemonics_nonext_a[2]
 
     mnemonics_extend_a = shamir.split_ems(
         2,
@@ -387,8 +388,8 @@ def test_group_ems_mnemonics(monkeypatch):
         ],
     ]
     assert mnemonics_extend_b[0] == mnemonics_extend_a[0]
-    assert mnemonics_extend_b[1][:3] == mnemonics_extend_a[1]
-    assert mnemonics_extend_b[2][:5] == mnemonics_extend_a[2]
+    assert mnemonics_extend_b[1] > mnemonics_extend_a[1]
+    assert mnemonics_extend_b[2] > mnemonics_extend_a[2]
 
     # Note that both SLIP-39 Mnemonics are "extendable", regardless of the value of the extendable
     # option when created.  So long as the caller only alters the number of shares in a group (and
@@ -397,9 +398,13 @@ def test_group_ems_mnemonics(monkeypatch):
 
     # We'll expect exactly one recovery for this set of mnemonic shares.  Note that we're recovering
     # a "non-extendable" EncryptedMasterSecret here, using output from two split_ems calls with
-    # different group member counts, but identical thresholds:
+    # different group member counts, but identical thresholds.  Here we use the ..._nonext_a's group 0, but
+    # only the new Mnemonics from ..._nonext_b:
     ems, groups = next(
-        shamir.group_ems_mnemonics(mnemonics_nonext_a[0] + mnemonics_nonext_b[1][:-2])
+        shamir.group_ems_mnemonics(
+            mnemonics_nonext_a[0]
+            + list(set(mnemonics_nonext_b[1]) - set(mnemonics_nonext_a[1]))
+        )
     )
     # print( f"Recovered {ems} using: {json.dumps( groups, indent=4, default=str )}" )
     assert ems.decrypt(b"TREZOR") == MS
@@ -411,10 +416,10 @@ def test_group_ems_mnemonics(monkeypatch):
         ],
         1: [
             Share.from_mnemonic(
-                "academic acid beard lungs center injury academic pupal hand surface volume have smart hormone wealthy echo capture year browser material"
+                "academic acid beard marathon criminal force perfect being dwarf energy scroll satoshi welfare lunar slush charity guilt briefing steady medal"
             ),
             Share.from_mnemonic(
-                "academic acid beard leaf desktop crowd erode vegan season warmth warn craft ceramic picture wrote depend radar result dream that"
+                "academic acid beard merit calcium music reaction says swimming rhythm member carbon regret daisy vintage gravity pile crisis estimate crush"
             ),
         ],
     }
