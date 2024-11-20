@@ -20,6 +20,7 @@
 #
 
 import hmac
+import itertools
 import secrets
 from dataclasses import dataclass
 from typing import (
@@ -34,7 +35,6 @@ from typing import (
     Tuple,
     Union,
 )
-import itertools
 
 from . import cipher
 from .constants import (
