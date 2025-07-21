@@ -54,6 +54,15 @@ Install the [Poetry](https://python-poetry.org/) tool, checkout
     $ poetry install
     $ poetry shell
 
+Alternatively, install [Nix](https://nixos.org/download/), and (assuming you have GNU `make` available), run:
+
+.. code-block:: console
+
+    $ make nix-venv-test
+
+to install a Python environment, create a Python `venv`, enter it and run the `make test` target.  To enter
+the `venv` in an interactive shell, run `make nix-venv`.
+
 CLI usage
 ---------
 

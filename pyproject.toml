@@ -18,6 +18,7 @@ click = { version = ">=7,<9", optional = true }
 bip32utils = "^0.3.post4"
 pytest = "*"
 black = ">=20"
+flake8 = "*"
 isort = "^5"
 
 [tool.poetry.extras]

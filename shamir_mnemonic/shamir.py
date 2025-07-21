@@ -93,6 +93,11 @@ class ShareGroup:
         return next(self.get_possible_groups())
 
     def get_possible_groups(self) -> "ShareGroup":
+        """Return successive member_threshold length groups of indices into the available shares.
+        If the shares are all valid, each group of mnemonics would be equivalent and sufficient to
+        use in recovery.  But, if any mnemonic(s) are corrupted we need to avoid using them.
+
+        """
         if not self.is_complete():
             raise MnemonicError(
                 f"Incomplete group of mnemonics; {len(self.shares)} provided of {self.member_threshold()} required."
@@ -302,10 +307,11 @@ def group_ems_mnemonics(
     deduce the group parameters, and then select a subset of the mnemonics to satisfy them.
 
     Since extra mnemonics (some perhaps with errors) may be supplied, we may need to produce
-    combinations until we've eliminated the erroneous one(s).  Then, if someone mistakenly collects
-    groups of incompatible mnemonics (for example, with the same identifier and group numbers, but
-    from a different original master secret, or from an attacker supplying decoy mnenonics), we'll
-    supply all possible combinations of the available groups to aid recovery of the master secret.
+    combinations of Shares until we've eliminated the erroneous one(s).  Then, if someone mistakenly
+    collects groups of incompatible mnemonics (for example, with the same identifier and group
+    numbers, but from a different original master secret, or from an attacker supplying decoy
+    mnenonics), we'll supply all cartesion products of all possible combinations of the available
+    compatible shares to aid recovery of the master secret(s).
 
     Even if groups of mnemonics from multiple SLIP-39 encodings are collected, aid the caller in
     recovery of any/all of them.
@@ -325,21 +331,32 @@ def group_ems_mnemonics(
             if strict:
                 raise
         else:
-            # We will cluster shares by distinct common_parameters (identifier, extendable,
-            # iteration_exponent, group_threshold, group_count), then by group_parameters.  This allows
-            # us to combine shares from original or extended mnemonics generated later, and attempt to
-            # recover mixed incompatible SLIP-39 groups.
+            # We will cluster mnemonic shares by distinct common_parameters, then by
+            # group_parameters.  This allows us to combine shares from original, extendable (or even
+            # expanded additional mnemonics for a group_index generated later), and attempt to
+            # recover seeds from mixed incompatible SLIP-39 groups.
             common_params.setdefault(
-                share.common_parameters(), {}  # incompatible SLIP-39 configurations
+                # Incompatible SLIP-39 configurations, by:
+                # - identifier
+                # - extendable
+                # - iteration_exponent
+                # - group_threshold
+                # - group_count
+                share.common_parameters(),
+                {},
             ).setdefault(
-                share.group_parameters(), ShareGroup()  # compatible mnemonics
+                # Possible compatible mnemonics within a SLIP-39 configuration, by common_parameters plus:
+                # - group_index
+                # - member_threshold
+                share.group_parameters(),
+                ShareGroup(),
             ).add(
-                share  # Cannot fail
+                share
             )
 
     # Now that we have isolated the distinct share groups, it's time to see what we can recover.
     # How many different Mnemonic sets are we possibly dealing with?  In addition to identifier, we
-    # have group count, extended, etc.  Allow multiple independent sets of mnemonics.  Our task is
+    # have group count, extendable, etc.  Allow multiple independent sets of mnemonics.  Our task is
     # to support the user in recovering their master seeds, however many they may have, or however
     # the mnemonics may have been mixed.
 
@@ -387,7 +404,7 @@ def group_ems_mnemonics(
             Produce the cartesian product of groups g0, g1, ..., gN.  The possibles: {x: ->
             {RawGroup: ShareGroup}} gives us a sequence of RawGroup(s) for group index x.
 
-            This would (inefficiently) find all combinations of available mnemonics the could be
+            This would (inefficiently) find all combinations of available mnemonics that could be
             combined to recover an encrypted master secret -- but, the caller should remove
             the used RawShares from possibles before re-invoking.
 
