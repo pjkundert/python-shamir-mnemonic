@@ -297,8 +297,55 @@ def _recover_secret(threshold: int, shares: Sequence[RawShare]) -> bytes:
     return shared_secret
 
 
+def locate_ems_rawshares(
+    distinct: ShareCommonParameters,
+    possibles: Dict[int, Dict[RawShare, ShareGroup]],
+    complete: bool = False,
+) -> Tuple[EncryptedMasterSecret, Sequence[RawShare]]:
+    """We have a minimal subset of the available groups indices w/ decoded RawShares secrets
+    (any w/ more than 1 consitutent Share has been validated against its digest).  Produce
+    the cartesian product of groups g0, g1, ..., gN.  The possibles: {x: -> {RawGroup:
+    ShareGroup}} gives us a sequence of RawGroup(s) for group index x.
+
+    This would (inefficiently) find all combinations of available mnemonics that could be
+    combined to recover an encrypted master secret -- but, the caller /should/ remove any
+    used RawShares from possibles before re-invoking to find further EncryptedSharedSecrets
+    to avoid re-trying with RawGroups that are already known to be used by another
+    EncryptedMasterSecret.
+
+    Mutates possibles by removing all (or one, if 'complete') used RawShares.  If no
+    EncryptedMasterSecret is found, returns None w/ remaining undecoded RawShares.
+
+    """
+
+    for subgroups in itertools.combinations(
+            sorted(possibles), distinct.group_threshold
+    ):
+        print( f"Drawing RawShares Cartesian Products from subgroups {subgroups} with RawShares numbering {list(len(possibles[gn]) for gn in subgroups)}" )
+        for rawshares in itertools.product(
+            *(possibles[gn].keys() for gn in subgroups)
+        ):
+            print( f"     ? looking for EMS in groups {subgroups} with rawshares {rawshares}" )
+            try:
+                ems = EncryptedMasterSecret(
+                    distinct.identifier,
+                    distinct.extendable,
+                    distinct.iteration_exponent,
+                    _recover_secret(distinct.group_threshold, rawshares),
+                )
+                # These 'rawshares', collected from a cartesian product group_threshold different 
+                #if complete:
+                #    del possibles[subgroups[0]]
+                return ems, rawshares
+            except Exception:
+                pass
+    # No more encrypted master secrets; return None w/ the remaining (unused) RawShares
+    return None, sum((list(possibles[gn]) for gn in possibles), [])
+
 def group_ems_mnemonics(
-    mnemonics: Iterable[Union[str, Share]], strict: bool = False
+    mnemonics: Iterable[Union[str, Share]],
+    strict: bool = False,		# Fail if any Share is found to be invalid
+    complete: bool = False,		# Find all related Shares, Groups instead of minimal
 ) -> Sequence[Tuple[EncryptedMasterSecret, Dict[int, Sequence[Share]]]]:
     """Attempt to yield a sequence of unique decoded EncryptedMasterSecret, and the dictionary of group
     indices -> set(<Share>) used to recover each SLIP-39 encoded encrypted seed.
@@ -327,112 +374,127 @@ def group_ems_mnemonics(
         try:
             if isinstance(share, str):
                 share = Share.from_mnemonic(share)
+            distinct = share.common_parameters()
+            grouping = share.group_parameters()
         except Exception:
+            # If something is awry with any supplied Mnemonic, ignore it unless 'strict'
             if strict:
                 raise
         else:
-            # We will cluster mnemonic shares by distinct common_parameters, then by
+            # We will cluster mnemonic shares by distinct common_parameters, then grouping by
             # group_parameters.  This allows us to combine shares from original, extendable (or even
             # expanded additional mnemonics for a group_index generated later), and attempt to
             # recover seeds from mixed incompatible SLIP-39 groups.
             common_params.setdefault(
-                # Incompatible SLIP-39 configurations, by:
+                # Incompatible SLIP-39 configuration groups, by:
                 # - identifier
                 # - extendable
                 # - iteration_exponent
                 # - group_threshold
                 # - group_count
-                share.common_parameters(),
+                distinct,
                 {},
             ).setdefault(
                 # Possible compatible mnemonics within a SLIP-39 configuration, by common_parameters plus:
                 # - group_index
                 # - member_threshold
-                share.group_parameters(),
+                grouping,
                 ShareGroup(),
             ).add(
                 share
+            )
+    print(f"Found {len(common_params)} distinct sets of shares")
+    for distinct, groups in common_params.items():
+        print(
+            f"  id: {distinct.identifier}: {distinct.group_threshold} of {distinct.group_count} groups req'd"
+        )
+        for grouping, sharegroup in groups.items():
+            print(
+                f"   group index: {grouping.group_index}: {len(sharegroup.shares)} of {grouping.member_threshold} shares req'd"
             )
 
     # Now that we have isolated the distinct share groups, it's time to see what we can recover.
     # How many different Mnemonic sets are we possibly dealing with?  In addition to identifier, we
     # have group count, extendable, etc.  Allow multiple independent sets of mnemonics.  Our task is
     # to support the user in recovering their master seeds, however many they may have, or however
-    # the mnemonics may have been mixed.
-
-    # Try every minimum viable subset of groups of length group_threshold, and for each group all
-    # minimum viable subsets of provided mnemonics.  We want to support recovery, even if invalid
-    # Mnemonics have been provided for a group, and if incompatible groups (same identifier and
-    # other common parameters but for a different master seed, or mixed groups) were provided.
+    # the mnemonics may have been mixed.  Try every minimum viable subset of groups of length
+    # group_threshold, and for each group all minimum viable subsets of provided mnemonics.  We want
+    # to support recovery, even if invalid Mnemonics have been provided for a group, and if
+    # incompatible groups (same identifier and other common parameters but for a different master
+    # seed, or mixed groups) were provided.
     recovered: Set[EncryptedMasterSecret] = set()
     for distinct, sharegroups in common_params.items():
         # Go through each of the available groups, identifying all available recoverable group
-        # secrets.  Once a subset of mnemonics is used, discard them and see if any other secrets
-        # are recoverable; multiple different (or decoy) SLIP-39 groups w/ the same common
-        # parameters could have been provided.
+        # secrets, and all mnemonics provided that comprise each.  Once a subset of mnemonics is
+        # used, discard one of them and see if the same or any other secrets are recoverable;
+        # multiple different (or decoy) SLIP-39 groups w/ the same common parameters could have been
+        # provided, and/or redundant mnemonics.
         possibles: Dict[int, Dict[RawShare, ShareGroup]] = {}
         for groupings, sharegroup in sharegroups.items():
-            if not sharegroup.is_complete():
-                continue
-            for shareminimal in sharegroup.get_possible_groups():
-                try:
-                    rawshare = RawShare(
-                        groupings.group_index,
-                        _recover_secret(
-                            groupings.member_threshold, shareminimal.to_raw_shares()
-                        ),
+            print(
+                f"working on id: {distinct.identifier}; group {grouping.group_index} w/ {len(sharegroups)} of {grouping.group_threshold} shares req'd"
+            )
+            while sharegroup.is_complete():
+                for shareminimal in sharegroup.get_possible_groups():
+                    print(
+                        f"  trying share indices {', '.join(str(s.index) for s in shareminimal.shares)} (need at least {sharegroup.member_threshold()})"
                     )
-                except Exception:
-                    pass
+                    try:
+                        rawshare = RawShare(
+                            groupings.group_index,
+                            _recover_secret(
+                                groupings.member_threshold, shareminimal.to_raw_shares()
+                            ),
+                        )
+                    except Exception as exc:
+                        print(
+                            f"  - fail share indices {', '.join(str(s.index) for s in shareminimal.shares)}: {exc}"
+                        )
+                        pass
+                    else:
+                        # We found (another?) minimal ShareGroup subset of sharegroup that leads to
+                        # a RawShare Each time, remove one of its consituent mnemonic Shares, and
+                        # continue looking.  This will (eventually) find *all* mnemonic Shares that
+                        # combine to yield each RawShare.  Add these to the developing ShareGroup
+                        # 'group', and then discard one and retry -- maybe more mnemonics...
+                        print(
+                            f"  - FIND share indices {', '.join(str(s.index) for s in shareminimal.shares)}: {rawshare.x}"
+                        )
+                        group = possibles.setdefault(
+                            # by SLIP-39 group indices
+                            rawshare.x,
+                            {},
+                        ).setdefault(
+                            # by recovered group RawShare
+                            rawshare,
+                            shareminimal,
+                        )
+                        # Simplify; remove either one or all Shares found to reconstitute this RawShare
+                        group.shares |= shareminimal.shares
+                        if complete:
+                            sharegroup.shares.remove(next(iter(shareminimal.shares)))
+                        else:
+                            sharegroup.shares -= shareminimal.shares
+                        break
                 else:
-                    possibles.setdefault(
-                        rawshare.x, {}  # by SLIP-39 group indices
-                    ).setdefault(
-                        rawshare, shareminimal  # by recovered group RawShare
+                    # No RawShare ever found in all possible combinations of this grouping!  Give up.
+                    print(
+                        f"  x No RawShare found in group {groupings.group_index} w/ {len(shareminimal.shares)} shares"
                     )
-                    sharegroup.shares -= shareminimal.shares
                     break
 
         # We now have all resolved available group indices x and their decoded group secret from
-        # RawGroup(x,data), and the first set of Mnemonics that resulted in each.  We want to now
-        # recover all combinations of these groups that lead to different SLIP-39 encrypted master
-        # secrets.  Since we can't know which combinations of group secrets could lead to a
-        # successful SLIP-39 decoding, we'll try every minimal combination of group indices
-        # available.
-        def ems_rawshares():
-            """We have a minimal subset of the available groups indices w/ decoded secrets.
-            Produce the cartesian product of groups g0, g1, ..., gN.  The possibles: {x: ->
-            {RawGroup: ShareGroup}} gives us a sequence of RawGroup(s) for group index x.
+        # RawGroup(x,data), and the minimal (or complete) set of Mnemonics that resulted in each.
+        # We want to now recover all combinations of these groups that lead to different SLIP-39
+        # encrypted master secrets.  Since we can't know which combinations of group secrets could
+        # lead to a successful SLIP-39 decoding, we'll try every minimal combination of group
+        # indices available.
 
-            This would (inefficiently) find all combinations of available mnemonics that could be
-            combined to recover an encrypted master secret -- but, the caller should remove
-            the used RawShares from possibles before re-invoking.
-
-            """
-            for subgroups in itertools.combinations(
-                sorted(possibles), distinct.group_threshold
-            ):
-                for rawshares in itertools.product(
-                    *(possibles[gn].keys() for gn in subgroups)
-                ):
-                    try:
-                        ems = EncryptedMasterSecret(
-                            distinct.identifier,
-                            distinct.extendable,
-                            distinct.iteration_exponent,
-                            _recover_secret(distinct.group_threshold, rawshares),
-                        )
-                        return ems, rawshares
-                    except Exception:
-                        pass
-            # No more encrypted master secrets; return the remaining (unused) RawShares
-            return None, sum((list(possibles[gn]) for gn in possibles), [])
-
-        # Yields every encrypted master secret recovered, and the group indices and set of Share
-        # mnemonics used to recover it.  This will be a minimal subset of the groups and mnemonics
-        # supplied.
+        # Yield every encrypted master secret recovered, and the group indices and set of Share
+        # mnemonics used to recover it.  This will be a minimal (or optionally 'complete') subset of
+        # the groups and mnemonics supplied.
         while len(possibles) >= distinct.group_threshold:
-            ems, rawshares = ems_rawshares()
+            ems, rawshares = locate_ems_rawshares(distinct, possibles)
             # Remove all {RawShare: ShareGroup} used from possibles, and return as {group#:
             # Sequence[Share]} Each group's set's shares are ordered by index, for testing
             # repeatability and ordering compatibility with other ..._ems functions.

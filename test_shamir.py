@@ -186,12 +186,13 @@ def test_recover_ems():
 def test_group_ems_mnemonics(monkeypatch):
     monkeypatch.setattr(shamir.shamir, "RANDOM_BYTES", lambda n: n * b"\0")
 
+    ems_MS_nonext = shamir.EncryptedMasterSecret.from_master_secret(
+        MS, b"TREZOR", identifier=0, extendable=False, iteration_exponent=1
+    )
     mnemonics_nonext_a = shamir.split_ems(
         2,
         [(1, 1), (2, 3), (3, 5)],
-        shamir.EncryptedMasterSecret.from_master_secret(
-            MS, b"TREZOR", identifier=0, extendable=False, iteration_exponent=1
-        ),
+        ems_MS_nonext,
     )
     # print( json.dumps( mnemonics_nonext_a, indent=4, default=str ))
     assert mnemonics_nonext_a == [
@@ -229,12 +230,11 @@ def test_group_ems_mnemonics(monkeypatch):
             ),
         ],
     ]
+
     mnemonics_nonext_b = shamir.split_ems(
         2,
         [(1, 1), (2, 5), (3, 7)],  # <-- increase group member count
-        shamir.EncryptedMasterSecret.from_master_secret(
-            MS, b"TREZOR", identifier=0, extendable=False, iteration_exponent=1
-        ),
+        ems_MS_nonext,
     )
     # print( json.dumps( mnemonics_nonext_b, indent=4, default=str ))
     assert mnemonics_nonext_b == [
@@ -289,12 +289,14 @@ def test_group_ems_mnemonics(monkeypatch):
     assert mnemonics_nonext_b[1] > mnemonics_nonext_a[1]
     assert mnemonics_nonext_b[2] > mnemonics_nonext_a[2]
 
+    # Now, generate an identically encrypted EMS (since we have eliminated all entropy), only differing in 'extenable'.
+    ems_MS_extend = shamir.EncryptedMasterSecret.from_master_secret(
+        MS, b"TREZOR", identifier=0, extendable=True, iteration_exponent=1
+    )
     mnemonics_extend_a = shamir.split_ems(
         2,
         [(1, 1), (2, 3), (3, 5)],
-        shamir.EncryptedMasterSecret.from_master_secret(
-            MS, b"TREZOR", identifier=0, extendable=True, iteration_exponent=1
-        ),
+        ems_MS_extend,
     )
     # print( json.dumps( mnemonics_extend_a, indent=4, default=str ))
     assert mnemonics_extend_a == [
@@ -335,9 +337,7 @@ def test_group_ems_mnemonics(monkeypatch):
     mnemonics_extend_b = shamir.split_ems(
         2,
         [(1, 1), (2, 5), (3, 7)],  # <-- increase group member count
-        shamir.EncryptedMasterSecret.from_master_secret(
-            MS, b"TREZOR", identifier=0, extendable=True, iteration_exponent=1
-        ),
+        ems_MS_extend,
     )
     # print( json.dumps( mnemonics_extend_b, indent=4, default=str ))
     assert mnemonics_extend_b == [
@@ -400,29 +400,28 @@ def test_group_ems_mnemonics(monkeypatch):
     # a "non-extendable" EncryptedMasterSecret here, using output from two split_ems calls with
     # different group member counts, but identical thresholds.  Here we use the ..._nonext_a's group 0, but
     # only the new Mnemonics from ..._nonext_b:
-    ems, groups = next(
-        shamir.group_ems_mnemonics(
-            mnemonics_nonext_a[0]
-            + list(set(mnemonics_nonext_b[1]) - set(mnemonics_nonext_a[1]))
-        )
-    )
-    # print( f"Recovered {ems} using: {json.dumps( groups, indent=4, default=str )}" )
-    assert ems.decrypt(b"TREZOR") == MS
-    assert groups == {
-        0: [
-            Share.from_mnemonic(
-                "academic acid acrobat leader civil gross counter dictate fancy findings lair freshman kind justice apart quiet lunch short vitamins painting"
-            )
-        ],
-        1: [
-            Share.from_mnemonic(
-                "academic acid beard marathon criminal force perfect being dwarf energy scroll satoshi welfare lunar slush charity guilt briefing steady medal"
-            ),
-            Share.from_mnemonic(
-                "academic acid beard merit calcium music reaction says swimming rhythm member carbon regret daisy vintage gravity pile crisis estimate crush"
-            ),
-        ],
-    }
+    for ems, groups in shamir.group_ems_mnemonics(
+        mnemonics_nonext_a[0]
+        + list(set(mnemonics_nonext_b[1]) - set(mnemonics_nonext_a[1]))
+    ):
+        print(f"Recovered {ems} using: {json.dumps( groups, indent=4, default=str )}")
+        assert ems.decrypt(b"TREZOR") == MS
+
+        assert groups == {
+            0: [
+                Share.from_mnemonic(
+                    "academic acid acrobat leader civil gross counter dictate fancy findings lair freshman kind justice apart quiet lunch short vitamins painting"
+                )
+            ],
+            1: [
+                Share.from_mnemonic(
+                    "academic acid beard marathon criminal force perfect being dwarf energy scroll satoshi welfare lunar slush charity guilt briefing steady medal"
+                ),
+                Share.from_mnemonic(
+                    "academic acid beard merit calcium music reaction says swimming rhythm member carbon regret daisy vintage gravity pile crisis estimate crush"
+                ),
+            ],
+        }
 
     # Here, we'll recover both unique EncryptedMasterSecret values with unique common_parameters
     # from the pool of all available mnemonics.  This is the super-power of group_ems_mnemonics; it
@@ -430,7 +429,7 @@ def test_group_ems_mnemonics(monkeypatch):
     # iterate over all combinations and cartesion products of available share groups to try to
     # recover any SLIP-39 encoded EncryptedMasterSecret values available.  It will ignore any
     # invalid, redundant or incomplete mnemonics.
-    recovered = []
+    recovered = {}
     for ems, groups in shamir.group_ems_mnemonics(
         sum(
             mnemonics_nonext_a
@@ -438,8 +437,65 @@ def test_group_ems_mnemonics(monkeypatch):
             + mnemonics_extend_a
             + mnemonics_extend_b,
             [],
-        )
+        ),
+        complete = True,
     ):
-        recovered.append(ems)
+        assert ems not in recovered
+        recovered[ems] = groups
     assert len(recovered) == 2
-    assert all(ems.decrypt(b"TREZOR") == MS for ems in recovered)
+    assert all(ems.decrypt(b"TREZOR") == MS for ems, _ in recovered.items())
+    print(
+        json.dumps(
+            {str(ems): group for ems, group in recovered.items()}, indent=4, default=str
+        )
+    )
+    assert recovered == {
+        ems_MS_nonext: {
+            0: [
+                Share.from_mnemonic(
+                    "academic acid acrobat leader civil gross counter dictate fancy findings lair freshman kind justice apart quiet lunch short vitamins painting"
+                )
+            ],
+            1: [
+                Share.from_mnemonic(
+                    "academic acid beard leaf desktop crowd erode vegan season warmth warn craft ceramic picture wrote depend radar result dream that"
+                ),
+                Share.from_mnemonic(
+                    "academic acid beard lily dwarf aide unknown fancy merit grant sharp leaves blimp exotic sharp fancy salon forecast worthy taught"
+                ),
+                Share.from_mnemonic(
+                    "academic acid beard lungs center injury academic pupal hand surface volume have smart hormone wealthy echo capture year browser material"
+                ),
+                Share.from_mnemonic(
+                    "academic acid beard marathon criminal force perfect being dwarf energy scroll satoshi welfare lunar slush charity guilt briefing steady medal"
+                ),
+                Share.from_mnemonic(
+                    "academic acid beard merit calcium music reaction says swimming rhythm member carbon regret daisy vintage gravity pile crisis estimate crush"
+                ),
+            ],
+        },
+        ems_MS_extend: {
+            0: [
+                Share.from_mnemonic(
+                    "academic agency acrobat leader check clinic isolate slavery branch bulge hairy library emphasis slim fused both cargo predator network adult"
+                )
+            ],
+            1: [
+                Share.from_mnemonic(
+                    "academic agency beard leaf both husky alarm firefly obtain device response graduate bedroom flash luxury friendly grasp slice robin music"
+                ),
+                Share.from_mnemonic(
+                    "academic agency beard lily armed tadpole scroll dynamic security unwrap exercise require busy busy firefly drink item column costume nylon"
+                ),
+                Share.from_mnemonic(
+                    "academic agency beard lungs cinema device true move texture obesity freshman jury should sack froth custody froth race finance dwarf"
+                ),
+                Share.from_mnemonic(
+                    "academic agency beard marathon display oasis crowd wits rhyme eclipse problem pecan security main license exclude editor fumes salary deploy"
+                ),
+                Share.from_mnemonic(
+                    "academic agency beard merit distance welfare survive sniff damage husband knife evening gross garlic check result extend estate agency destroy"
+                ),
+            ],
+        },
+    }

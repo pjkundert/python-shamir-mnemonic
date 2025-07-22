@@ -39,7 +39,7 @@ clean-test: ## remove test and coverage artifacts
 	rm -fr .pytest_cache
 
 test:
-	pytest
+	pytest -vv --capture=no
 
 style_check:
 	isort --check-only shamir_mnemonic/ *.py
