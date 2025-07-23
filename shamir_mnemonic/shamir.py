@@ -453,10 +453,7 @@ def group_ems_mnemonics(
                         pass
                     else:
                         # We found (another?) minimal ShareGroup subset of sharegroup that leads to
-                        # a RawShare Each time, remove one of its consituent mnemonic Shares, and
-                        # continue looking.  This will (eventually) find *all* mnemonic Shares that
-                        # combine to yield each RawShare.  Add these to the developing ShareGroup
-                        # 'group', and then discard one and retry -- maybe more mnemonics...
+                        # a RawShare.
                         print(
                             f"  - FIND share indices {', '.join(str(s.index) for s in shareminimal.shares)}: {rawshare.x}"
                         )
@@ -469,12 +466,12 @@ def group_ems_mnemonics(
                             rawshare,
                             shareminimal,
                         )
-                        # Simplify; remove either one or all Shares found to reconstitute this RawShare
+                        # Each time, remove one of its consituent mnemonic Shares, and continue
+                        # looking to ensure 'complete' coverage; this will (eventually) find *all*
+                        # mnemonic Shares that combine to yield each RawShare.
                         group.shares |= shareminimal.shares
-                        if complete:
-                            sharegroup.shares.remove(next(iter(shareminimal.shares)))
-                        else:
-                            sharegroup.shares -= shareminimal.shares
+                        forget = {next(iter(shareminimal.shares))} if complete else shareminimal.shares
+                        sharegroup.shares -= forget
                         break
                 else:
                     # No RawShare ever found in all possible combinations of this grouping!  Give up.
@@ -492,7 +489,9 @@ def group_ems_mnemonics(
 
         # Yield every encrypted master secret recovered, and the group indices and set of Share
         # mnemonics used to recover it.  This will be a minimal (or optionally 'complete') subset of
-        # the groups and mnemonics supplied.
+        # the groups and mnemonics supplied.  Note that we may end up with plenty of extra RawShares
+        # that we cannot decode an EMS from, if an attacker is at work producing false shares; so
+        # break when we're able to locate None.
         while len(possibles) >= distinct.group_threshold:
             ems, rawshares = locate_ems_rawshares(distinct, possibles)
             # Remove all {RawShare: ShareGroup} used from possibles, and return as {group#:

@@ -499,3 +499,93 @@ def test_group_ems_mnemonics(monkeypatch):
             ],
         },
     }
+
+
+    # Let's test some groups of mnemonics from different seeds, but the same parameters.  Again, we
+    # are suppressing entropy, so the only thing that will differ is the encryption of the seed; all
+    # other EMS parameters will be identical, and (of course) the underlying seed is identical.
+    ems_MS_extend_DIFFER = shamir.EncryptedMasterSecret.from_master_secret(
+        MS, b"DIFFER", identifier=0, extendable=True, iteration_exponent=1
+    )
+    assert ems_MS_extend != ems_MS_extend_DIFFER
+    assert ems_MS_extend.decrypt(b"TREZOR") == ems_MS_extend_DIFFER.decrypt(b"DIFFER")== MS
+
+    # Produce SLIP-39 mnemonics for the alternatively encrypted (but identically parameterized) EMS
+    mnemonics_extend_b_DIFFER = shamir.split_ems(
+        2,
+        [(1, 1), (2, 5), (3, 7)],  # <-- increase group member count
+        ems_MS_extend_DIFFER,
+    )
+    print( "MS w/ TREZOR:", json.dumps( mnemonics_extend_b, indent=4, default=str ))
+    print( "MS w/ DIFFER:", json.dumps( mnemonics_extend_b_DIFFER, indent=4, default=str ))
+
+    import random
+    class ShareCorrupt( Share ):
+        def corrupt( self, bits=1 ) -> "Share":
+            value_array = bytearray(self.value)
+            pairs = set()
+            while len(pairs) < bits:
+                pairs.add( (random.randint(0, len(value_array)-1), random.randint(0, 7)) )
+            for byte,bit in pairs:
+                value_array[byte] ^= (1 << bit)
+            return Share(
+                self.identifier,
+                self.extendable,
+                self.iteration_exponent,
+                self.group_index,
+                self.group_threshold,
+                self.group_count,
+                self.index,
+                self.member_threshold,
+                bytes(value_array)
+            )
+
+    def corrupt( share, bits=1 ):
+        if isinstance(share, Share):
+            share = share.mnemonic()
+        return (
+            ShareCorrupt
+            .from_mnemonic( share )
+            .corrupt( bits )
+            .mnemonic()
+        )
+
+    print( corrupt(  "academic agency beard merit distance welfare survive sniff damage husband knife evening gross garlic check result extend estate agency destroy" ))
+    assert corrupt( "academic agency beard merit distance welfare survive sniff damage husband knife evening gross garlic check result extend estate agency destroy", bits=0 ) \
+        == "academic agency beard merit distance welfare survive sniff damage husband knife evening gross garlic check result extend estate agency destroy"
+    assert corrupt( "academic agency beard merit distance welfare survive sniff damage husband knife evening gross garlic check result extend estate agency destroy" ) \
+        != "academic agency beard merit distance welfare survive sniff damage husband knife evening gross garlic check result extend estate agency destroy"
+
+
+    # Now, attempt to recover.  Should regain both EMSs, even though all Shares have identical
+    # parameters!!  Remember -- it is a /feature/ of SLIP-39 that an incorrect decryption key
+    # results in a "valid" decrypted seed (just a seed that doesn't match the original).  So, see if
+    # any decryption with the possible passwords correctly recovers the original seed...
+    recovered = {}
+    shares = (
+        sum(
+            mnemonics_extend_b
+            + mnemonics_extend_b_DIFFER,
+            [],
+        )
+        + list( map( corrupt, sum(
+            mnemonics_extend_b,
+            [],
+        )))
+    )
+    print( "Mnemonics w/ TREZOR, DIFFER and corrupt sets:", json.dumps( shares, indent=4, default=str ))
+    for ems, groups in shamir.group_ems_mnemonics(
+        shares,
+        complete = False,
+    ):
+        assert ems not in recovered
+        recovered[ems] = groups
+
+    assert len(recovered) == 2
+    print(
+        json.dumps(
+            {str(ems): group for ems, group in recovered.items()}, indent=4, default=str
+        )
+    )
+    assert all( any( map( lambda p: ems.decrypt( p ) == MS, (b"TREZOR", b"DIFFER") )) for ems in recovered), \
+        "Failed to recover original seed w/ any valid password"
