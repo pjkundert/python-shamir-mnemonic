@@ -301,31 +301,29 @@ def locate_ems_rawshares(
     distinct: ShareCommonParameters,
     possibles: Dict[int, Dict[RawShare, ShareGroup]],
     complete: bool = False,
-) -> Tuple[EncryptedMasterSecret, Sequence[RawShare]]:
-    """We have a minimal subset of the available groups indices w/ decoded RawShares secrets
-    (any w/ more than 1 consitutent Share has been validated against its digest).  Produce
-    the cartesian product of groups g0, g1, ..., gN.  The possibles: {x: -> {RawGroup:
-    ShareGroup}} gives us a sequence of RawGroup(s) for group index x.
+) -> Sequence[Tuple[EncryptedMasterSecret, Dict[RawShare, ShareGroup]]]:
+    """We have the available group indices w/ decoded RawShares secrets (any w/ more than 1
+    constitutent Share has been validated against its digest).  Produce the cartesian product of
+    groups g0, g1, ..., gN, to see if we can recover any EncryptedMasterSecrets.  The possibles: {x:
+    -> {RawGroup: ShareGroup}} gives us a sequence of RawGroup(s) for group index x.
 
     This would (inefficiently) find all combinations of available mnemonics that could be
-    combined to recover an encrypted master secret -- but, the caller /should/ remove any
+    combined to recover any EncryptedMasterSecret -- but, the caller /should/ remove one/all
     used RawShares from possibles before re-invoking to find further EncryptedSharedSecrets
     to avoid re-trying with RawGroups that are already known to be used by another
     EncryptedMasterSecret.
 
-    Mutates possibles by removing all (or one, if 'complete') used RawShares.  If no
-    EncryptedMasterSecret is found, returns None w/ remaining undecoded RawShares.
+    Mutates the supplied 'possibles' to remove one/all RawShares: ShareGroup to support desired
+    level of 'complete'.  If the caller re-invokes (instead of just consuming all Combinations and
+    Cartesian Products, which would yield all possible paths to obtaining each EMS), it can optimize
+    the process of locating all available EMSs.
 
     """
 
     for subgroups in itertools.combinations(
-            sorted(possibles), distinct.group_threshold
+        sorted(possibles), distinct.group_threshold
     ):
-        print( f"Drawing RawShares Cartesian Products from subgroups {subgroups} with RawShares numbering {list(len(possibles[gn]) for gn in subgroups)}" )
-        for rawshares in itertools.product(
-            *(possibles[gn].keys() for gn in subgroups)
-        ):
-            print( f"     ? looking for EMS in groups {subgroups} with rawshares {rawshares}" )
+        for rawshares in itertools.product(*(possibles[gn].keys() for gn in subgroups)):
             try:
                 ems = EncryptedMasterSecret(
                     distinct.identifier,
@@ -333,40 +331,22 @@ def locate_ems_rawshares(
                     distinct.iteration_exponent,
                     _recover_secret(distinct.group_threshold, rawshares),
                 )
-                # These 'rawshares', collected from a cartesian product group_threshold different 
-                #if complete:
-                #    del possibles[subgroups[0]]
-                return ems, rawshares
+                using: Dict[RawShare, ShareGroup] = {}
+                for rawshare in rawshares:
+                    if complete and using:
+                        using[rawshare] = possibles[rawshare.x].get(rawshare)
+                    else:
+                        using[rawshare] = possibles[rawshare.x].pop(rawshare)
+                yield ems, using
             except Exception:
                 pass
-    # No more encrypted master secrets; return None w/ the remaining (unused) RawShares
-    return None, sum((list(possibles[gn]) for gn in possibles), [])
 
-def group_ems_mnemonics(
+
+def group_common_mnemonics(
     mnemonics: Iterable[Union[str, Share]],
-    strict: bool = False,		# Fail if any Share is found to be invalid
-    complete: bool = False,		# Find all related Shares, Groups instead of minimal
-) -> Sequence[Tuple[EncryptedMasterSecret, Dict[int, Sequence[Share]]]]:
-    """Attempt to yield a sequence of unique decoded EncryptedMasterSecret, and the dictionary of group
-    indices -> set(<Share>) used to recover each SLIP-39 encoded encrypted seed.
-
-    This is difficult to do externally, because it requires partially decoding the mnemonics to
-    deduce the group parameters, and then select a subset of the mnemonics to satisfy them.
-
-    Since extra mnemonics (some perhaps with errors) may be supplied, we may need to produce
-    combinations of Shares until we've eliminated the erroneous one(s).  Then, if someone mistakenly
-    collects groups of incompatible mnemonics (for example, with the same identifier and group
-    numbers, but from a different original master secret, or from an attacker supplying decoy
-    mnenonics), we'll supply all cartesion products of all possible combinations of the available
-    compatible shares to aid recovery of the master secret(s).
-
-    Even if groups of mnemonics from multiple SLIP-39 encodings are collected, aid the caller in
-    recovery of any/all of them.
-
-    Ignores invalid Mnemonics and absence of a recovered secret unless strict is specified.
-
-    """
-    # Eliminate any obviously flawed Mnemonics, group by distinct common, then group parameters
+    strict: bool = False,
+) -> Dict[ShareCommonParameters, Dict[ShareGroupParameters, ShareGroup]]:
+    """Eliminate any obviously flawed Mnemonics, group by distinct common, then group parameters."""
     common_params: Dict[
         ShareCommonParameters, Dict[ShareGroupParameters, ShareGroup]
     ] = {}
@@ -403,15 +383,93 @@ def group_ems_mnemonics(
             ).add(
                 share
             )
-    print(f"Found {len(common_params)} distinct sets of shares")
-    for distinct, groups in common_params.items():
-        print(
-            f"  id: {distinct.identifier}: {distinct.group_threshold} of {distinct.group_count} groups req'd"
-        )
-        for grouping, sharegroup in groups.items():
-            print(
-                f"   group index: {grouping.group_index}: {len(sharegroup.shares)} of {grouping.member_threshold} shares req'd"
-            )
+    return common_params
+
+
+def recover_possible_rawshares(
+    distinct: ShareCommonParameters,
+    sharegroups: Dict[ShareGroupParameters, ShareGroup],
+    complete: bool = False,
+) -> Dict[int, Dict[RawShare, ShareGroup]]:
+    """Go through each of the available groups, identifying all available recoverable group secrets,
+    and all mnemonics provided that comprise each.  Once a subset of mnemonics is used, discard one
+    of them and see if the same or any other secrets are recoverable; multiple different (or decoy)
+    SLIP-39 groups w/ the same common parameters could have been provided, and/or redundant
+    mnemonics.
+
+    """
+    possibles: Dict[int, Dict[RawShare, ShareGroup]] = {}
+    for grouping, sharegroup in sharegroups.items():
+        while sharegroup.is_complete():
+            for shareminimal in sharegroup.get_possible_groups():
+                try:
+                    rawshare = RawShare(
+                        grouping.group_index,
+                        _recover_secret(
+                            grouping.member_threshold, shareminimal.to_raw_shares()
+                        ),
+                    )
+                except Exception as exc:
+                    pass
+                else:
+                    # We found (another?) minimal ShareGroup subset of sharegroup that leads to
+                    # a RawShare.
+                    group = possibles.setdefault(
+                        # by SLIP-39 group indices
+                        rawshare.x,
+                        {},
+                    ).setdefault(
+                        # by recovered group RawShare
+                        rawshare,
+                        shareminimal,
+                    )
+                    # Each time, remove one of its consituent mnemonic Shares, and continue
+                    # looking to ensure 'complete' coverage; this will (eventually) find *all*
+                    # mnemonic Shares that combine to yield each RawShare.
+                    group.shares |= shareminimal.shares
+                    forget = (
+                        {next(iter(shareminimal.shares))}
+                        if complete
+                        else shareminimal.shares
+                    )
+                    sharegroup.shares -= forget
+                    break
+            else:
+                # No RawShare ever found in all possible combinations of this grouping!  Give up.
+                break
+    return possibles
+
+
+def group_ems_rawshares(
+    mnemonics: Iterable[Union[str, Share]],
+    strict: bool = False,  # Fail if any Share is found to be invalid
+    complete: bool = False,  # Find all related Shares, Groups instead of minimal
+) -> Sequence[
+    Tuple[
+        Tuple[EncryptedMasterSecret, ShareCommonParameters], Dict[RawShare, ShareGroup]
+    ]
+]:
+    """Attempt to yield a sequence of uniquely decoded EncryptedMasterSecrets and their SLIP-39
+    encoding parameters, and the dictionary of group indices -> set(<Share>) used to recover each
+    SLIP-39 encoded encrypted seed.  Remember, the same EncryptedMasterSecret may have been encoded
+    with muliple different SLIP-39 encodings.
+
+    This is difficult to do externally, because it requires partially decoding the mnemonics to
+    deduce the group parameters, and then select a subset of the mnemonics to satisfy them.
+
+    Since extra mnemonics (some perhaps with errors) may be supplied, we may need to produce
+    combinations of Shares until we've eliminated the erroneous one(s).  Then, if someone mistakenly
+    collects groups of incompatible mnemonics (for example, with the same identifier and group
+    numbers, but from a different original master secret, or from an attacker supplying decoy
+    mnenonics), we'll supply all cartesion products of all possible combinations of the available
+    compatible shares to aid recovery of the master secret(s).
+
+    Even if groups of mnemonics from multiple SLIP-39 encodings are collected, aid the caller in
+    recovery of any/all of them.
+
+    Ignores invalid Mnemonics and absence of a recovered secret unless strict is specified.
+
+    """
 
     # Now that we have isolated the distinct share groups, it's time to see what we can recover.
     # How many different Mnemonic sets are we possibly dealing with?  In addition to identifier, we
@@ -422,63 +480,16 @@ def group_ems_mnemonics(
     # to support recovery, even if invalid Mnemonics have been provided for a group, and if
     # incompatible groups (same identifier and other common parameters but for a different master
     # seed, or mixed groups) were provided.
-    recovered: Set[EncryptedMasterSecret] = set()
-    for distinct, sharegroups in common_params.items():
-        # Go through each of the available groups, identifying all available recoverable group
-        # secrets, and all mnemonics provided that comprise each.  Once a subset of mnemonics is
-        # used, discard one of them and see if the same or any other secrets are recoverable;
-        # multiple different (or decoy) SLIP-39 groups w/ the same common parameters could have been
-        # provided, and/or redundant mnemonics.
-        possibles: Dict[int, Dict[RawShare, ShareGroup]] = {}
-        for groupings, sharegroup in sharegroups.items():
-            print(
-                f"working on id: {distinct.identifier}; group {grouping.group_index} w/ {len(sharegroups)} of {grouping.group_threshold} shares req'd"
-            )
-            while sharegroup.is_complete():
-                for shareminimal in sharegroup.get_possible_groups():
-                    print(
-                        f"  trying share indices {', '.join(str(s.index) for s in shareminimal.shares)} (need at least {sharegroup.member_threshold()})"
-                    )
-                    try:
-                        rawshare = RawShare(
-                            groupings.group_index,
-                            _recover_secret(
-                                groupings.member_threshold, shareminimal.to_raw_shares()
-                            ),
-                        )
-                    except Exception as exc:
-                        print(
-                            f"  - fail share indices {', '.join(str(s.index) for s in shareminimal.shares)}: {exc}"
-                        )
-                        pass
-                    else:
-                        # We found (another?) minimal ShareGroup subset of sharegroup that leads to
-                        # a RawShare.
-                        print(
-                            f"  - FIND share indices {', '.join(str(s.index) for s in shareminimal.shares)}: {rawshare.x}"
-                        )
-                        group = possibles.setdefault(
-                            # by SLIP-39 group indices
-                            rawshare.x,
-                            {},
-                        ).setdefault(
-                            # by recovered group RawShare
-                            rawshare,
-                            shareminimal,
-                        )
-                        # Each time, remove one of its consituent mnemonic Shares, and continue
-                        # looking to ensure 'complete' coverage; this will (eventually) find *all*
-                        # mnemonic Shares that combine to yield each RawShare.
-                        group.shares |= shareminimal.shares
-                        forget = {next(iter(shareminimal.shares))} if complete else shareminimal.shares
-                        sharegroup.shares -= forget
-                        break
-                else:
-                    # No RawShare ever found in all possible combinations of this grouping!  Give up.
-                    print(
-                        f"  x No RawShare found in group {groupings.group_index} w/ {len(shareminimal.shares)} shares"
-                    )
-                    break
+    common_mnemonics: Dict[
+        ShareCommonParameters, Dict[ShareGroupParameters, ShareGroup]
+    ] = group_common_mnemonics(mnemonics, strict)
+    recovered: Dict[
+        Tuple[EncryptedMasterSecret, ShareCommonParameters], Dict[RawShare, ShareGroup]
+    ] = {}
+    for distinct, sharegroups in common_mnemonics.items():
+        possibles: Dict[int, Dict[RawShare, ShareGroup]] = recover_possible_rawshares(
+            distinct, sharegroups, complete
+        )
 
         # We now have all resolved available group indices x and their decoded group secret from
         # RawGroup(x,data), and the minimal (or complete) set of Mnemonics that resulted in each.
@@ -493,25 +504,45 @@ def group_ems_mnemonics(
         # that we cannot decode an EMS from, if an attacker is at work producing false shares; so
         # break when we're able to locate None.
         while len(possibles) >= distinct.group_threshold:
-            ems, rawshares = locate_ems_rawshares(distinct, possibles)
-            # Remove all {RawShare: ShareGroup} used from possibles, and return as {group#:
-            # Sequence[Share]} Each group's set's shares are ordered by index, for testing
-            # repeatability and ordering compatibility with other ..._ems functions.
-            groups = {
-                rawshare.x: sorted(
-                    possibles[rawshare.x].pop(rawshare).shares, key=lambda s: s.index
-                )
-                for rawshare in rawshares
-            }
-            for x in list(possibles):
-                if not possibles[x]:
-                    possibles.pop(x)
-            if ems and ems not in recovered:
-                yield ems, groups
-                recovered.add(ems)
-
+            for ems, using in locate_ems_rawshares(
+                distinct, possibles, complete=complete
+            ):
+                if (ems, distinct) not in recovered:
+                    # If caller doesn't care about collecting 'complete' set of source {RawShare:
+                    # ShareGroup} used to recover the EMS, yield inline, otherwise at end of
+                    if not complete:
+                        yield (ems, distinct), using
+                recovered.setdefault((ems, distinct), {}).update(using)
+                # Always re-locate to optimize recovery for 'complete' w/ mutated 'possibles'.
+                break
+            else:
+                # No EMS found; even though sufficient RawShares available to satisfy the
+                # group_threshold; fake or incompatible
+                break
+        if complete:
+            # If caller wanted 'complete' set of mnemonics, we'll yield at the end of scanning each
+            # unique share encoding.
+            for (ems, encoding), using in recovered.items():
+                if encoding == distinct:
+                    yield (ems, encoding), using
     if strict and not recovered:
         raise MnemonicError("Invalid set of mnemonics; No encoded secret found")
+
+
+def group_ems_mnemonics(
+    mnemonics: Iterable[Union[str, Share]],
+    strict: bool = False,  # Fail if any Share is found to be invalid
+    complete: bool = False,  # Find all related Shares, Groups instead of minimal
+) -> Sequence[Tuple[EncryptedMasterSecret, Dict[int, List[Share]]]]:
+    """Here we just care about the recovered EMSs and their mnemonics.  Discard details about the specific
+    encodings used.  We could yield the same EMS recovered with different sets of Mnemonics.
+
+    """
+    for (ems, _), using in group_ems_rawshares(mnemonics, strict, complete):
+        yield ems, {
+            rg.x: list(map(str, sorted(sg.shares, key=lambda s: s.index)))
+            for rg, sg in using.items()
+        }
 
 
 def decode_mnemonics(mnemonics: Iterable[str]) -> Dict[int, ShareGroup]:

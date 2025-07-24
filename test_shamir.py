@@ -404,22 +404,16 @@ def test_group_ems_mnemonics(monkeypatch):
         mnemonics_nonext_a[0]
         + list(set(mnemonics_nonext_b[1]) - set(mnemonics_nonext_a[1]))
     ):
-        print(f"Recovered {ems} using: {json.dumps( groups, indent=4, default=str )}")
+        # print(f"Recovered {ems} using: {json.dumps( groups, indent=4, default=str )}")
         assert ems.decrypt(b"TREZOR") == MS
 
         assert groups == {
             0: [
-                Share.from_mnemonic(
-                    "academic acid acrobat leader civil gross counter dictate fancy findings lair freshman kind justice apart quiet lunch short vitamins painting"
-                )
+                "academic acid acrobat leader civil gross counter dictate fancy findings lair freshman kind justice apart quiet lunch short vitamins painting"
             ],
             1: [
-                Share.from_mnemonic(
-                    "academic acid beard marathon criminal force perfect being dwarf energy scroll satoshi welfare lunar slush charity guilt briefing steady medal"
-                ),
-                Share.from_mnemonic(
-                    "academic acid beard merit calcium music reaction says swimming rhythm member carbon regret daisy vintage gravity pile crisis estimate crush"
-                ),
+                "academic acid beard marathon criminal force perfect being dwarf energy scroll satoshi welfare lunar slush charity guilt briefing steady medal",
+                "academic acid beard merit calcium music reaction says swimming rhythm member carbon regret daisy vintage gravity pile crisis estimate crush",
             ],
         }
 
@@ -438,68 +432,40 @@ def test_group_ems_mnemonics(monkeypatch):
             + mnemonics_extend_b,
             [],
         ),
-        complete = True,
     ):
         assert ems not in recovered
         recovered[ems] = groups
     assert len(recovered) == 2
     assert all(ems.decrypt(b"TREZOR") == MS for ems, _ in recovered.items())
-    print(
-        json.dumps(
-            {str(ems): group for ems, group in recovered.items()}, indent=4, default=str
-        )
-    )
+    # print(
+    #     json.dumps(
+    #         {str(ems): group for ems, group in recovered.items()}, indent=4, default=str
+    #     )
+    # )
     assert recovered == {
         ems_MS_nonext: {
             0: [
-                Share.from_mnemonic(
-                    "academic acid acrobat leader civil gross counter dictate fancy findings lair freshman kind justice apart quiet lunch short vitamins painting"
-                )
+                "academic acid acrobat leader civil gross counter dictate fancy findings lair freshman kind justice apart quiet lunch short vitamins painting"
             ],
             1: [
-                Share.from_mnemonic(
-                    "academic acid beard leaf desktop crowd erode vegan season warmth warn craft ceramic picture wrote depend radar result dream that"
-                ),
-                Share.from_mnemonic(
-                    "academic acid beard lily dwarf aide unknown fancy merit grant sharp leaves blimp exotic sharp fancy salon forecast worthy taught"
-                ),
-                Share.from_mnemonic(
-                    "academic acid beard lungs center injury academic pupal hand surface volume have smart hormone wealthy echo capture year browser material"
-                ),
-                Share.from_mnemonic(
-                    "academic acid beard marathon criminal force perfect being dwarf energy scroll satoshi welfare lunar slush charity guilt briefing steady medal"
-                ),
-                Share.from_mnemonic(
-                    "academic acid beard merit calcium music reaction says swimming rhythm member carbon regret daisy vintage gravity pile crisis estimate crush"
-                ),
+                "academic acid beard leaf desktop crowd erode vegan season warmth warn craft ceramic picture wrote depend radar result dream that",
+                "academic acid beard lily dwarf aide unknown fancy merit grant sharp leaves blimp exotic sharp fancy salon forecast worthy taught",
+                "academic acid beard lungs center injury academic pupal hand surface volume have smart hormone wealthy echo capture year browser material",
+                "academic acid beard merit calcium music reaction says swimming rhythm member carbon regret daisy vintage gravity pile crisis estimate crush",
             ],
         },
         ems_MS_extend: {
             0: [
-                Share.from_mnemonic(
-                    "academic agency acrobat leader check clinic isolate slavery branch bulge hairy library emphasis slim fused both cargo predator network adult"
-                )
+                "academic agency acrobat leader check clinic isolate slavery branch bulge hairy library emphasis slim fused both cargo predator network adult"
             ],
             1: [
-                Share.from_mnemonic(
-                    "academic agency beard leaf both husky alarm firefly obtain device response graduate bedroom flash luxury friendly grasp slice robin music"
-                ),
-                Share.from_mnemonic(
-                    "academic agency beard lily armed tadpole scroll dynamic security unwrap exercise require busy busy firefly drink item column costume nylon"
-                ),
-                Share.from_mnemonic(
-                    "academic agency beard lungs cinema device true move texture obesity freshman jury should sack froth custody froth race finance dwarf"
-                ),
-                Share.from_mnemonic(
-                    "academic agency beard marathon display oasis crowd wits rhyme eclipse problem pecan security main license exclude editor fumes salary deploy"
-                ),
-                Share.from_mnemonic(
-                    "academic agency beard merit distance welfare survive sniff damage husband knife evening gross garlic check result extend estate agency destroy"
-                ),
+                "academic agency beard leaf both husky alarm firefly obtain device response graduate bedroom flash luxury friendly grasp slice robin music",
+                "academic agency beard lungs cinema device true move texture obesity freshman jury should sack froth custody froth race finance dwarf",
+                "academic agency beard marathon display oasis crowd wits rhyme eclipse problem pecan security main license exclude editor fumes salary deploy",
+                "academic agency beard merit distance welfare survive sniff damage husband knife evening gross garlic check result extend estate agency destroy",
             ],
         },
     }
-
 
     # Let's test some groups of mnemonics from different seeds, but the same parameters.  Again, we
     # are suppressing entropy, so the only thing that will differ is the encryption of the seed; all
@@ -508,7 +474,11 @@ def test_group_ems_mnemonics(monkeypatch):
         MS, b"DIFFER", identifier=0, extendable=True, iteration_exponent=1
     )
     assert ems_MS_extend != ems_MS_extend_DIFFER
-    assert ems_MS_extend.decrypt(b"TREZOR") == ems_MS_extend_DIFFER.decrypt(b"DIFFER")== MS
+    assert (
+        ems_MS_extend.decrypt(b"TREZOR")
+        == ems_MS_extend_DIFFER.decrypt(b"DIFFER")
+        == MS
+    )
 
     # Produce SLIP-39 mnemonics for the alternatively encrypted (but identically parameterized) EMS
     mnemonics_extend_b_DIFFER = shamir.split_ems(
@@ -516,18 +486,21 @@ def test_group_ems_mnemonics(monkeypatch):
         [(1, 1), (2, 5), (3, 7)],  # <-- increase group member count
         ems_MS_extend_DIFFER,
     )
-    print( "MS w/ TREZOR:", json.dumps( mnemonics_extend_b, indent=4, default=str ))
-    print( "MS w/ DIFFER:", json.dumps( mnemonics_extend_b_DIFFER, indent=4, default=str ))
+    # print("MS w/ TREZOR:", json.dumps(mnemonics_extend_b, indent=4, default=str))
+    # print("MS w/ DIFFER:", json.dumps(mnemonics_extend_b_DIFFER, indent=4, default=str))
 
     import random
-    class ShareCorrupt( Share ):
-        def corrupt( self, bits=1 ) -> "Share":
+
+    class ShareCorrupt(Share):
+        def corrupt(self, bits=1) -> "Share":
             value_array = bytearray(self.value)
             pairs = set()
             while len(pairs) < bits:
-                pairs.add( (random.randint(0, len(value_array)-1), random.randint(0, 7)) )
-            for byte,bit in pairs:
-                value_array[byte] ^= (1 << bit)
+                pairs.add(
+                    (random.randint(0, len(value_array) - 1), random.randint(0, 7))
+                )
+            for byte, bit in pairs:
+                value_array[byte] ^= 1 << bit
             return Share(
                 self.identifier,
                 self.extendable,
@@ -537,55 +510,112 @@ def test_group_ems_mnemonics(monkeypatch):
                 self.group_count,
                 self.index,
                 self.member_threshold,
-                bytes(value_array)
+                bytes(value_array),
             )
 
-    def corrupt( share, bits=1 ):
+    def corrupt(share, bits=1):
         if isinstance(share, Share):
             share = share.mnemonic()
-        return (
-            ShareCorrupt
-            .from_mnemonic( share )
-            .corrupt( bits )
-            .mnemonic()
+        return ShareCorrupt.from_mnemonic(share).corrupt(bits).mnemonic()
+
+    # print(
+    #     corrupt(
+    #         "academic agency beard merit distance welfare survive sniff damage husband knife evening gross garlic check result extend estate agency destroy"
+    #     )
+    # )
+    assert (
+        corrupt(
+            "academic agency beard merit distance welfare survive sniff damage husband knife evening gross garlic check result extend estate agency destroy",
+            bits=0,
         )
-
-    print( corrupt(  "academic agency beard merit distance welfare survive sniff damage husband knife evening gross garlic check result extend estate agency destroy" ))
-    assert corrupt( "academic agency beard merit distance welfare survive sniff damage husband knife evening gross garlic check result extend estate agency destroy", bits=0 ) \
         == "academic agency beard merit distance welfare survive sniff damage husband knife evening gross garlic check result extend estate agency destroy"
-    assert corrupt( "academic agency beard merit distance welfare survive sniff damage husband knife evening gross garlic check result extend estate agency destroy" ) \
+    )
+    assert (
+        corrupt(
+            "academic agency beard merit distance welfare survive sniff damage husband knife evening gross garlic check result extend estate agency destroy"
+        )
         != "academic agency beard merit distance welfare survive sniff damage husband knife evening gross garlic check result extend estate agency destroy"
-
+    )
 
     # Now, attempt to recover.  Should regain both EMSs, even though all Shares have identical
     # parameters!!  Remember -- it is a /feature/ of SLIP-39 that an incorrect decryption key
     # results in a "valid" decrypted seed (just a seed that doesn't match the original).  So, see if
     # any decryption with the possible passwords correctly recovers the original seed...
     recovered = {}
-    shares = (
-        sum(
-            mnemonics_extend_b
-            + mnemonics_extend_b_DIFFER,
-            [],
+    shares = sum(
+        mnemonics_extend_b + mnemonics_extend_b_DIFFER,
+        [],
+    ) + list(
+        map(
+            corrupt,
+            sum(
+                mnemonics_extend_b,
+                [],
+            ),
         )
-        + list( map( corrupt, sum(
-            mnemonics_extend_b,
-            [],
-        )))
     )
-    print( "Mnemonics w/ TREZOR, DIFFER and corrupt sets:", json.dumps( shares, indent=4, default=str ))
+    # print(
+    #     "Mnemonics w/ TREZOR, DIFFER and corrupt sets:",
+    #     json.dumps(shares, indent=4, default=str),
+    # )
     for ems, groups in shamir.group_ems_mnemonics(
         shares,
-        complete = False,
+        complete=True,
     ):
         assert ems not in recovered
         recovered[ems] = groups
 
     assert len(recovered) == 2
-    print(
-        json.dumps(
-            {str(ems): group for ems, group in recovered.items()}, indent=4, default=str
-        )
-    )
-    assert all( any( map( lambda p: ems.decrypt( p ) == MS, (b"TREZOR", b"DIFFER") )) for ems in recovered), \
-        "Failed to recover original seed w/ any valid password"
+    # print(
+    #     json.dumps(
+    #         {str(ems): group for ems, group in recovered.items()}, indent=4, default=str
+    #     )
+    # )
+    assert all(
+        any(map(lambda p: ems.decrypt(p) == MS, (b"TREZOR", b"DIFFER")))
+        for ems in recovered
+    ), "Failed to recover original seed w/ any valid password"
+
+    assert recovered == {
+        ems_MS_extend_DIFFER: {
+            0: [
+                "academic agency acrobat leader again gray increase worthy response music solution eraser squeeze cylinder acquire total music costume mountain snapshot"
+            ],
+            1: [
+                "academic agency beard leaf describe headset column cards steady secret plunge estate glad fused acquire glasses daughter fatigue acrobat famous",
+                "academic agency beard lily actress ruler fake camera skunk dryer boundary daughter dwarf crazy acne window blanket simple best leaves",
+                "academic agency beard lungs bucket cleanup smell plan valid corner result leaf style rainbow academic elbow survive grasp angry agency",
+                "academic agency beard marathon crush mayor relate plot timber source acrobat thunder lobe romp acid subject together wolf breathe sprinkle",
+                "academic agency beard merit cowboy view visual image skin adorn likely ladybug mouse merchant activity champion medal firm yelp lungs",
+            ],
+            2: [
+                "academic agency ceramic lips dream home born metric hearing exceed grasp raisin adult necklace adapt amazing estate math vitamins become",
+                "academic agency ceramic luxury duke manager brother vampire skin adorn likely ladybug mouse merchant activity champion medal enlarge loyalty skin",
+                "academic agency ceramic march adequate ticket auction general picture express tolerate silver multiple aluminum acne craft scandal divorce auction image",
+                "academic agency ceramic method document escape paces purple pitch famous wildlife language champion teaspoon activity perfect diagnose loud tension upstairs",
+                "academic agency ceramic mortgage alarm client lunch chemical satisfy carpet paid similar chemical jerky acne primary kind view hazard exceed",
+                "academic agency ceramic nervous again sack lobe elephant graduate extra jacket acquire race idea academic lily regular decent bulge merchant",
+            ],
+        },
+        ems_MS_extend: {
+            0: [
+                "academic agency acrobat leader check clinic isolate slavery branch bulge hairy library emphasis slim fused both cargo predator network adult"
+            ],
+            1: [
+                "academic agency beard leaf both husky alarm firefly obtain device response graduate bedroom flash luxury friendly grasp slice robin music",
+                "academic agency beard lily armed tadpole scroll dynamic security unwrap exercise require busy busy firefly drink item column costume nylon",
+                "academic agency beard lungs cinema device true move texture obesity freshman jury should sack froth custody froth race finance dwarf",
+                "academic agency beard marathon display oasis crowd wits rhyme eclipse problem pecan security main license exclude editor fumes salary deploy",
+                "academic agency beard merit distance welfare survive sniff damage husband knife evening gross garlic check result extend estate agency destroy",
+            ],
+            2: [
+                "academic agency ceramic learn academic academic academic academic academic academic academic academic academic academic academic academic academic zero laundry presence",
+                "academic agency ceramic lips blind wireless process scramble military lecture diploma nylon birthday talent deal wealthy briefing edge geology scandal",
+                "academic agency ceramic luxury drove vampire criminal idea damage husband knife evening gross garlic check result extend work keyboard priority",
+                "academic agency ceramic march counter ancestor lizard railroad river usual estate software improve river behavior emperor envy elevator genre scholar",
+                "academic agency ceramic method change magazine exhaust forecast priority fused pink presence demand webcam violence visual crowd tendency declare coastal",
+                "academic agency ceramic mortgage desert imply tenant package dream syndrome paid diet clothes cluster scout average depend fused cubic express",
+                "academic agency ceramic nervous calcium item graduate critical license darkness spine total fiber numb starting eraser justice that deny clothes",
+            ],
+        },
+    }
