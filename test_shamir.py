@@ -1,10 +1,12 @@
 import json
+import random
 import secrets
 from itertools import combinations
 from random import shuffle
 
 import pytest
 from bip32utils import BIP32Key
+from deepset import deepset
 
 import shamir_mnemonic as shamir
 from shamir_mnemonic import MnemonicError, Share
@@ -408,13 +410,13 @@ def test_group_ems_mnemonics(monkeypatch):
         assert ems.decrypt(b"TREZOR") == MS
 
         assert groups == {
-            0: [
+            0: {
                 "academic acid acrobat leader civil gross counter dictate fancy findings lair freshman kind justice apart quiet lunch short vitamins painting"
-            ],
-            1: [
+            },
+            1: {
                 "academic acid beard marathon criminal force perfect being dwarf energy scroll satoshi welfare lunar slush charity guilt briefing steady medal",
                 "academic acid beard merit calcium music reaction says swimming rhythm member carbon regret daisy vintage gravity pile crisis estimate crush",
-            ],
+            },
         }
 
     # Here, we'll recover both unique EncryptedMasterSecret values with unique common_parameters
@@ -423,6 +425,7 @@ def test_group_ems_mnemonics(monkeypatch):
     # iterate over all combinations and cartesion products of available share groups to try to
     # recover any SLIP-39 encoded EncryptedMasterSecret values available.  It will ignore any
     # invalid, redundant or incomplete mnemonics.
+
     recovered = {}
     for ems, groups in shamir.group_ems_mnemonics(
         sum(
@@ -432,9 +435,11 @@ def test_group_ems_mnemonics(monkeypatch):
             + mnemonics_extend_b,
             [],
         ),
+        complete=True,
     ):
         assert ems not in recovered
         recovered[ems] = groups
+
     assert len(recovered) == 2
     assert all(ems.decrypt(b"TREZOR") == MS for ems, _ in recovered.items())
     # print(
@@ -442,30 +447,68 @@ def test_group_ems_mnemonics(monkeypatch):
     #         {str(ems): group for ems, group in recovered.items()}, indent=4, default=str
     #     )
     # )
-    assert recovered == {
+    expected = {
         ems_MS_nonext: {
-            0: [
+            0: {
                 "academic acid acrobat leader civil gross counter dictate fancy findings lair freshman kind justice apart quiet lunch short vitamins painting"
-            ],
-            1: [
-                "academic acid beard leaf desktop crowd erode vegan season warmth warn craft ceramic picture wrote depend radar result dream that",
-                "academic acid beard lily dwarf aide unknown fancy merit grant sharp leaves blimp exotic sharp fancy salon forecast worthy taught",
-                "academic acid beard lungs center injury academic pupal hand surface volume have smart hormone wealthy echo capture year browser material",
+            },
+            1: {
                 "academic acid beard merit calcium music reaction says swimming rhythm member carbon regret daisy vintage gravity pile crisis estimate crush",
-            ],
+                "academic acid beard marathon criminal force perfect being dwarf energy scroll satoshi welfare lunar slush charity guilt briefing steady medal",
+                "academic acid beard lily dwarf aide unknown fancy merit grant sharp leaves blimp exotic sharp fancy salon forecast worthy taught",
+                "academic acid beard leaf desktop crowd erode vegan season warmth warn craft ceramic picture wrote depend radar result dream that",
+                "academic acid beard lungs center injury academic pupal hand surface volume have smart hormone wealthy echo capture year browser material",
+            },
+            2: {
+                "academic acid ceramic mortgage ancient beard duration wolf beam smirk ultimate helpful amuse rapids item election plastic library voting orange",
+                "academic acid ceramic luxury acquire gross likely very swimming rhythm member carbon regret daisy vintage gravity pile arena quiet material",
+                "academic acid ceramic lips dress custody tension wildlife forbid surprise ticket already ugly emerald laundry pickup deny exhaust cards orange",
+                "academic acid ceramic nervous devote force galaxy veteran much priority losing injury frost swimming vegan learn dress ruler formal material",
+                "academic acid ceramic method diet drift sweater alto epidemic beyond analysis hearing timber vegan alto tidy obtain ceramic cricket sack",
+                "academic acid ceramic learn academic academic academic academic academic academic academic academic academic academic academic academic academic ugly saver sack",
+                "academic acid ceramic march dream estimate genuine ambition listen gesture harvest broken fiction hawk making safari mountain problem hospital snake",
+            },
         },
         ems_MS_extend: {
-            0: [
+            0: {
                 "academic agency acrobat leader check clinic isolate slavery branch bulge hairy library emphasis slim fused both cargo predator network adult"
-            ],
-            1: [
-                "academic agency beard leaf both husky alarm firefly obtain device response graduate bedroom flash luxury friendly grasp slice robin music",
-                "academic agency beard lungs cinema device true move texture obesity freshman jury should sack froth custody froth race finance dwarf",
-                "academic agency beard marathon display oasis crowd wits rhyme eclipse problem pecan security main license exclude editor fumes salary deploy",
+            },
+            1: {
                 "academic agency beard merit distance welfare survive sniff damage husband knife evening gross garlic check result extend estate agency destroy",
-            ],
+                "academic agency beard lungs cinema device true move texture obesity freshman jury should sack froth custody froth race finance dwarf",
+                "academic agency beard lily armed tadpole scroll dynamic security unwrap exercise require busy busy firefly drink item column costume nylon",
+                "academic agency beard leaf both husky alarm firefly obtain device response graduate bedroom flash luxury friendly grasp slice robin music",
+                "academic agency beard marathon display oasis crowd wits rhyme eclipse problem pecan security main license exclude editor fumes salary deploy",
+            },
+            2: {
+                "academic agency ceramic method change magazine exhaust forecast priority fused pink presence demand webcam violence visual crowd tendency declare coastal",
+                "academic agency ceramic march counter ancestor lizard railroad river usual estate software improve river behavior emperor envy elevator genre scholar",
+                "academic agency ceramic learn academic academic academic academic academic academic academic academic academic academic academic academic academic zero laundry presence",
+                "academic agency ceramic luxury drove vampire criminal idea damage husband knife evening gross garlic check result extend work keyboard priority",
+                "academic agency ceramic lips blind wireless process scramble military lecture diploma nylon birthday talent deal wealthy briefing edge geology scandal",
+                "academic agency ceramic mortgage desert imply tenant package dream syndrome paid diet clothes cluster scout average depend fused cubic express",
+                "academic agency ceramic nervous calcium item graduate critical license darkness spine total fiber numb starting eraser justice that deny clothes",
+            },
         },
     }
+    assert deepset(recovered) == expected
+
+    # And again, with complete=False
+    recovered = {}
+    for ems, groups in shamir.group_ems_mnemonics(
+        sum(
+            mnemonics_nonext_a
+            + mnemonics_nonext_b
+            + mnemonics_extend_a
+            + mnemonics_extend_b,
+            [],
+        ),
+        complete=False,
+    ):
+        assert ems not in recovered
+        recovered[ems] = groups
+    assert len(recovered) == 2
+    assert deepset(recovered) <= expected
 
     # Let's test some groups of mnemonics from different seeds, but the same parameters.  Again, we
     # are suppressing entropy, so the only thing that will differ is the encryption of the seed; all
@@ -486,10 +529,6 @@ def test_group_ems_mnemonics(monkeypatch):
         [(1, 1), (2, 5), (3, 7)],  # <-- increase group member count
         ems_MS_extend_DIFFER,
     )
-    # print("MS w/ TREZOR:", json.dumps(mnemonics_extend_b, indent=4, default=str))
-    # print("MS w/ DIFFER:", json.dumps(mnemonics_extend_b_DIFFER, indent=4, default=str))
-
-    import random
 
     class ShareCorrupt(Share):
         def corrupt(self, bits=1) -> "Share":
@@ -541,7 +580,6 @@ def test_group_ems_mnemonics(monkeypatch):
     # parameters!!  Remember -- it is a /feature/ of SLIP-39 that an incorrect decryption key
     # results in a "valid" decrypted seed (just a seed that doesn't match the original).  So, see if
     # any decryption with the possible passwords correctly recovers the original seed...
-    recovered = {}
     shares = sum(
         mnemonics_extend_b + mnemonics_extend_b_DIFFER,
         [],
@@ -558,6 +596,7 @@ def test_group_ems_mnemonics(monkeypatch):
     #     "Mnemonics w/ TREZOR, DIFFER and corrupt sets:",
     #     json.dumps(shares, indent=4, default=str),
     # )
+    recovered = {}
     for ems, groups in shamir.group_ems_mnemonics(
         shares,
         complete=True,
@@ -576,46 +615,60 @@ def test_group_ems_mnemonics(monkeypatch):
         for ems in recovered
     ), "Failed to recover original seed w/ any valid password"
 
-    assert recovered == {
-        ems_MS_extend_DIFFER: {
-            0: [
-                "academic agency acrobat leader again gray increase worthy response music solution eraser squeeze cylinder acquire total music costume mountain snapshot"
-            ],
-            1: [
-                "academic agency beard leaf describe headset column cards steady secret plunge estate glad fused acquire glasses daughter fatigue acrobat famous",
-                "academic agency beard lily actress ruler fake camera skunk dryer boundary daughter dwarf crazy acne window blanket simple best leaves",
-                "academic agency beard lungs bucket cleanup smell plan valid corner result leaf style rainbow academic elbow survive grasp angry agency",
-                "academic agency beard marathon crush mayor relate plot timber source acrobat thunder lobe romp acid subject together wolf breathe sprinkle",
-                "academic agency beard merit cowboy view visual image skin adorn likely ladybug mouse merchant activity champion medal firm yelp lungs",
-            ],
-            2: [
-                "academic agency ceramic lips dream home born metric hearing exceed grasp raisin adult necklace adapt amazing estate math vitamins become",
-                "academic agency ceramic luxury duke manager brother vampire skin adorn likely ladybug mouse merchant activity champion medal enlarge loyalty skin",
-                "academic agency ceramic march adequate ticket auction general picture express tolerate silver multiple aluminum acne craft scandal divorce auction image",
-                "academic agency ceramic method document escape paces purple pitch famous wildlife language champion teaspoon activity perfect diagnose loud tension upstairs",
-                "academic agency ceramic mortgage alarm client lunch chemical satisfy carpet paid similar chemical jerky acne primary kind view hazard exceed",
-                "academic agency ceramic nervous again sack lobe elephant graduate extra jacket acquire race idea academic lily regular decent bulge merchant",
-            ],
-        },
+    expected = {
         ems_MS_extend: {
-            0: [
+            0: {
                 "academic agency acrobat leader check clinic isolate slavery branch bulge hairy library emphasis slim fused both cargo predator network adult"
-            ],
-            1: [
-                "academic agency beard leaf both husky alarm firefly obtain device response graduate bedroom flash luxury friendly grasp slice robin music",
-                "academic agency beard lily armed tadpole scroll dynamic security unwrap exercise require busy busy firefly drink item column costume nylon",
-                "academic agency beard lungs cinema device true move texture obesity freshman jury should sack froth custody froth race finance dwarf",
-                "academic agency beard marathon display oasis crowd wits rhyme eclipse problem pecan security main license exclude editor fumes salary deploy",
+            },
+            1: {
                 "academic agency beard merit distance welfare survive sniff damage husband knife evening gross garlic check result extend estate agency destroy",
-            ],
-            2: [
-                "academic agency ceramic learn academic academic academic academic academic academic academic academic academic academic academic academic academic zero laundry presence",
-                "academic agency ceramic lips blind wireless process scramble military lecture diploma nylon birthday talent deal wealthy briefing edge geology scandal",
-                "academic agency ceramic luxury drove vampire criminal idea damage husband knife evening gross garlic check result extend work keyboard priority",
-                "academic agency ceramic march counter ancestor lizard railroad river usual estate software improve river behavior emperor envy elevator genre scholar",
+                "academic agency beard lungs cinema device true move texture obesity freshman jury should sack froth custody froth race finance dwarf",
+                "academic agency beard lily armed tadpole scroll dynamic security unwrap exercise require busy busy firefly drink item column costume nylon",
+                "academic agency beard leaf both husky alarm firefly obtain device response graduate bedroom flash luxury friendly grasp slice robin music",
+                "academic agency beard marathon display oasis crowd wits rhyme eclipse problem pecan security main license exclude editor fumes salary deploy",
+            },
+            2: {
                 "academic agency ceramic method change magazine exhaust forecast priority fused pink presence demand webcam violence visual crowd tendency declare coastal",
+                "academic agency ceramic march counter ancestor lizard railroad river usual estate software improve river behavior emperor envy elevator genre scholar",
+                "academic agency ceramic learn academic academic academic academic academic academic academic academic academic academic academic academic academic zero laundry presence",
+                "academic agency ceramic luxury drove vampire criminal idea damage husband knife evening gross garlic check result extend work keyboard priority",
+                "academic agency ceramic lips blind wireless process scramble military lecture diploma nylon birthday talent deal wealthy briefing edge geology scandal",
                 "academic agency ceramic mortgage desert imply tenant package dream syndrome paid diet clothes cluster scout average depend fused cubic express",
                 "academic agency ceramic nervous calcium item graduate critical license darkness spine total fiber numb starting eraser justice that deny clothes",
-            ],
+            },
+        },
+        ems_MS_extend_DIFFER: {
+            0: {
+                "academic agency acrobat leader again gray increase worthy response music solution eraser squeeze cylinder acquire total music costume mountain snapshot"
+            },
+            1: {
+                "academic agency beard merit cowboy view visual image skin adorn likely ladybug mouse merchant activity champion medal firm yelp lungs",
+                "academic agency beard lungs bucket cleanup smell plan valid corner result leaf style rainbow academic elbow survive grasp angry agency",
+                "academic agency beard lily actress ruler fake camera skunk dryer boundary daughter dwarf crazy acne window blanket simple best leaves",
+                "academic agency beard leaf describe headset column cards steady secret plunge estate glad fused acquire glasses daughter fatigue acrobat famous",
+                "academic agency beard marathon crush mayor relate plot timber source acrobat thunder lobe romp acid subject together wolf breathe sprinkle",
+            },
+            2: {
+                "academic agency ceramic method document escape paces purple pitch famous wildlife language champion teaspoon activity perfect diagnose loud tension upstairs",
+                "academic agency ceramic learn academic academic academic academic academic academic academic academic academic academic academic academic academic zero laundry presence",
+                "academic agency ceramic lips dream home born metric hearing exceed grasp raisin adult necklace adapt amazing estate math vitamins become",
+                "academic agency ceramic march adequate ticket auction general picture express tolerate silver multiple aluminum acne craft scandal divorce auction image",
+                "academic agency ceramic luxury duke manager brother vampire skin adorn likely ladybug mouse merchant activity champion medal enlarge loyalty skin",
+                "academic agency ceramic mortgage alarm client lunch chemical satisfy carpet paid similar chemical jerky acne primary kind view hazard exceed",
+                "academic agency ceramic nervous again sack lobe elephant graduate extra jacket acquire race idea academic lily regular decent bulge merchant",
+            },
         },
     }
+    assert deepset(recovered) <= expected
+
+    # And again, with complete=False
+    recovered = {}
+    for ems, groups in shamir.group_ems_mnemonics(
+        shares,
+        complete=False,
+    ):
+        assert ems not in recovered
+        recovered[ems] = groups
+
+    assert len(recovered) == 2
+    assert deepset(recovered) <= expected

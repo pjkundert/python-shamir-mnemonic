@@ -533,16 +533,13 @@ def group_ems_mnemonics(
     mnemonics: Iterable[Union[str, Share]],
     strict: bool = False,  # Fail if any Share is found to be invalid
     complete: bool = False,  # Find all related Shares, Groups instead of minimal
-) -> Sequence[Tuple[EncryptedMasterSecret, Dict[int, List[Share]]]]:
+) -> Sequence[Tuple[EncryptedMasterSecret, Dict[int, Set[Share]]]]:
     """Here we just care about the recovered EMSs and their mnemonics.  Discard details about the specific
     encodings used.  We could yield the same EMS recovered with different sets of Mnemonics.
 
     """
     for (ems, _), using in group_ems_rawshares(mnemonics, strict, complete):
-        yield ems, {
-            rg.x: list(map(str, sorted(sg.shares, key=lambda s: s.index)))
-            for rg, sg in using.items()
-        }
+        yield ems, {rg.x: set(map(str, sg.shares)) for rg, sg in using.items()}
 
 
 def decode_mnemonics(mnemonics: Iterable[str]) -> Dict[int, ShareGroup]:
