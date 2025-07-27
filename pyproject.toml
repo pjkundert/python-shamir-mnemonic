@@ -20,7 +20,7 @@ pytest = "*"
 black = ">=20"
 flake8 = "*"
 isort = "^5"
-deepset = "*"
+deepset = "^1"
 
 [tool.poetry.extras]
 cli = ["click"]

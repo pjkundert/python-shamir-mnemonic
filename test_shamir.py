@@ -508,7 +508,7 @@ def test_group_ems_mnemonics(monkeypatch):
         assert ems not in recovered
         recovered[ems] = groups
     assert len(recovered) == 2
-    assert deepset(recovered) <= expected
+    assert deepset(recovered) < expected
 
     # Let's test some groups of mnemonics from different seeds, but the same parameters.  Again, we
     # are suppressing entropy, so the only thing that will differ is the encryption of the seed; all
@@ -671,4 +671,4 @@ def test_group_ems_mnemonics(monkeypatch):
         recovered[ems] = groups
 
     assert len(recovered) == 2
-    assert deepset(recovered) <= expected
+    assert deepset(recovered) < expected
