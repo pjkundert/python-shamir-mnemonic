@@ -28,6 +28,12 @@ cli = ["click"]
 [tool.poetry.scripts]
 shamir = "shamir_mnemonic.cli:cli"
 
+[tool.black]
+target-version = ['py36']
+
+[tool.isort]
+profile = "black"
+
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"

@@ -392,9 +392,9 @@ def recover_possible_rawshares(
     complete: bool = False,
 ) -> Dict[int, Dict[RawShare, ShareGroup]]:
     """Go through each of the available groups, identifying all available recoverable group secrets,
-    and all mnemonics provided that comprise each.  Once a subset of mnemonics is used, discard one
-    of them and see if the same or any other secrets are recoverable; multiple different (or decoy)
-    SLIP-39 groups w/ the same common parameters could have been provided, and/or redundant
+    and all mnemonics provided that comprise each.  Once a subset of mnemonics is used, discard
+    one/all of them and see if the same or any other secrets are recoverable; multiple different (or
+    decoy) SLIP-39 groups w/ the same common parameters could have been provided, and/or redundant
     mnemonics.
 
     """
@@ -471,11 +471,11 @@ def group_ems_rawshares(
 
     """
 
-    # Now that we have isolated the distinct share groups, it's time to see what we can recover.
-    # How many different Mnemonic sets are we possibly dealing with?  In addition to identifier, we
-    # have group count, extendable, etc.  Allow multiple independent sets of mnemonics.  Our task is
-    # to support the user in recovering their master seeds, however many they may have, or however
-    # the mnemonics may have been mixed.  Try every minimum viable subset of groups of length
+    # Once we have isolated the distinct share groups, it's time to see what we can recover.  How
+    # many different Mnemonic sets are we possibly dealing with?  In addition to identifier, we have
+    # group count, extendable, etc.  Allow multiple independent sets of mnemonics.  Our task is to
+    # support the user in recovering their master seeds, however many they may have, or however the
+    # mnemonics may have been mixed.  Try every minimum viable subset of groups of length
     # group_threshold, and for each group all minimum viable subsets of provided mnemonics.  We want
     # to support recovery, even if invalid Mnemonics have been provided for a group, and if
     # incompatible groups (same identifier and other common parameters but for a different master

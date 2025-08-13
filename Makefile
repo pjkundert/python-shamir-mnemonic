@@ -1,13 +1,18 @@
 SHELL		:= /bin/bash
 
-POETRY		?= poetry
 PYTHON		?= $(shell python3 --version >/dev/null 2>&1 && echo python3 || echo python )
 
 # Ensure $(PYTHON), $(VENV) are re-evaluated at time of expansion, when target 'python' and 'poetry' are known to be available
 PYTHON_V	= $(shell $(PYTHON) -c "import sys; print('-'.join((('venv' if sys.prefix != sys.base_prefix else next(iter(filter(None,sys.base_prefix.split('/'))))),sys.platform,sys.implementation.cache_tag)))" 2>/dev/null )
 
-VENV_OPTS	=
-VENV		= $(CURDIR)-$(shell poetry version -s 2>/dev/null)-$(PYTHON_V)
+VERSION		= $(shell poetry version -s 2>/dev/null)
+VENV		= $(CURDIR)-$(VERSION)-$(PYTHON_V)
+
+# Force export of variables that might be set from command line
+export VENV_OPTS	?=
+export POETRY		?= poetry
+export PYTEST		?= pytest
+export PYTEST_OPTS	?= # -vv --capture=no
 
 
 build:
@@ -41,11 +46,20 @@ clean-test: ## remove test and coverage artifacts
 	rm -fr .pytest_cache
 
 test:
-	pytest # -vvv --capture=no
+	$(PYTEST) $(PYTEST_OPTS)
+
+# Run all tests with names matching the target string
+unit-%:
+	$(PYTEST) $(PYTEST_OPTS) -k $*
 
 style_check:
 	isort --check-only shamir_mnemonic/ *.py
 	black shamir_mnemonic/ *.py --check
+
+analyze: style_check
+	$(PYTHON) -m flake8 --color never -j 1 --max-line-length=100 \
+	  --ignore=W503,E201,E202,E203,E127,E221,E223,E226,E231,E241,E242,E251,E265,E272,E274 \
+	  deepset.py test_deepset.py
 
 style:
 	black shamir_mnemonic/ *.py
