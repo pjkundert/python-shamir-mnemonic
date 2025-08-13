@@ -386,12 +386,18 @@ def group_common_mnemonics(
     return common_params
 
 
-def recover_possible_rawshares(
-    distinct: ShareCommonParameters,
+def recover_group_rawshares(
     sharegroups: Dict[ShareGroupParameters, ShareGroup],
     complete: bool = False,
 ) -> Dict[int, Dict[RawShare, ShareGroup]]:
-    """Go through each of the available groups, identifying all available recoverable group secrets,
+    """Recovers all available SLIP-39 group RawShares, optionally collecting the 'complete' set of
+    provided Shares belonging to the ShareGroup used to recover the group's RawShare secret.
+    Ignores invalid, incomplete or otherwise unusable Shares provided.  Produces a dict keyed by all
+    deduced group RawShare x coordinates, to a dict keyed by all recovered RawShares for each group
+    x coordinate, mapped to the ShareGroup of Shares used to recover it.  These RawShares may
+    represent 1 or more SLIP-39 encoded EncryptedMasterSecrets.
+
+    Go through each of the available groups, identifying all available recoverable group secrets,
     and all mnemonics provided that comprise each.  Once a subset of mnemonics is used, discard
     one/all of them and see if the same or any other secrets are recoverable; multiple different (or
     decoy) SLIP-39 groups w/ the same common parameters could have been provided, and/or redundant
@@ -427,12 +433,10 @@ def recover_possible_rawshares(
                     # looking to ensure 'complete' coverage; this will (eventually) find *all*
                     # mnemonic Shares that combine to yield each RawShare.
                     group.shares |= shareminimal.shares
-                    forget = (
-                        {next(iter(shareminimal.shares))}
-                        if complete
-                        else shareminimal.shares
-                    )
-                    sharegroup.shares -= forget
+                    if complete:
+                        sharegroup.shares.remove(next(iter(shareminimal.shares)))
+                    else:
+                        sharegroup.shares -= shareminimal.shares
                     break
             else:
                 # No RawShare ever found in all possible combinations of this grouping!  Give up.
@@ -487,8 +491,8 @@ def group_ems_rawshares(
         Tuple[EncryptedMasterSecret, ShareCommonParameters], Dict[RawShare, ShareGroup]
     ] = {}
     for distinct, sharegroups in common_mnemonics.items():
-        possibles: Dict[int, Dict[RawShare, ShareGroup]] = recover_possible_rawshares(
-            distinct, sharegroups, complete
+        possibles: Dict[int, Dict[RawShare, ShareGroup]] = recover_group_rawshares(
+            sharegroups, complete
         )
 
         # We now have all resolved available group indices x and their decoded group secret from
