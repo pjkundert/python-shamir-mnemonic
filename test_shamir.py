@@ -3,6 +3,7 @@ import random
 import secrets
 from itertools import combinations
 from random import shuffle
+from typing import Union
 
 import pytest
 from bip32utils import BIP32Key
@@ -531,9 +532,9 @@ def test_group_ems_mnemonics(monkeypatch):
     )
 
     class ShareCorrupt(Share):
-        def corrupt(self, bits=1) -> "Share":
+        def corrupt(self, bits: int = 1) -> "Share":
             value_array = bytearray(self.value)
-            pairs = set()
+            pairs: set[tuple[int, int]] = set()
             while len(pairs) < bits:
                 pairs.add(
                     (random.randint(0, len(value_array) - 1), random.randint(0, 7))
@@ -552,7 +553,7 @@ def test_group_ems_mnemonics(monkeypatch):
                 bytes(value_array),
             )
 
-    def corrupt(share, bits=1):
+    def corrupt(share: Union[Share, str], bits: int = 1) -> str:
         if isinstance(share, Share):
             share = share.mnemonic()
         return ShareCorrupt.from_mnemonic(share).corrupt(bits).mnemonic()

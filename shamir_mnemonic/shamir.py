@@ -25,7 +25,9 @@ import secrets
 from dataclasses import dataclass
 from typing import (
     Any,
+    Collection,
     Dict,
+    Generator,
     Iterable,
     Iterator,
     List,
@@ -186,11 +188,11 @@ def _precompute_exp_log() -> Tuple[List[int], List[int]]:
 EXP_TABLE, LOG_TABLE = _precompute_exp_log()
 
 
-def _interpolate(shares: Sequence[RawShare], x: int) -> bytes:
+def _interpolate(shares: Collection[RawShare], x: int) -> bytes:
     """
     Returns f(x) given the Shamir shares (x_1, f(x_1)), ... , (x_k, f(x_k)).
     :param shares: The Shamir shares.
-    :type shares: A list of pairs (x_i, y_i), where x_i is an integer and y_i is an array of
+    :type shares: A collection of pairs (x_i, y_i), where x_i is an integer and y_i is an array of
         bytes representing the evaluations of the polynomials in x_i.
     :param int x: The x coordinate of the result.
     :return: Evaluations of the polynomials in x.
@@ -282,7 +284,7 @@ def _split_secret(
     return shares
 
 
-def _recover_secret(threshold: int, shares: Sequence[RawShare]) -> bytes:
+def _recover_secret(threshold: int, shares: Collection[RawShare]) -> bytes:
     # If the threshold is 1, then the digest of the shared secret is not used.
     if threshold == 1:
         return next(iter(shares)).data
@@ -299,7 +301,7 @@ def _recover_secret(threshold: int, shares: Sequence[RawShare]) -> bytes:
 
 
 def _recover_secret_rawshares(
-    threshold: int, share_count: int, shares: Sequence[RawShare]
+    threshold: int, share_count: int, shares: Collection[RawShare]
 ) -> Sequence[RawShare]:
     """In addition to just the secret and its digest, we can recover all of a secret's original
     RawShares, that were used to produce its derived Shares.  This is the inverse of _split_secret.
@@ -330,7 +332,7 @@ def locate_ems_rawshares(
     distinct: ShareCommonParameters,
     possibles: Dict[int, Dict[RawShare, ShareGroup]],
     complete: bool = False,
-) -> Sequence[Tuple[EncryptedMasterSecret, Dict[RawShare, ShareGroup]]]:
+) -> Generator[Tuple[EncryptedMasterSecret, Dict[RawShare, ShareGroup]], None, None]:
     """We have the available group indices w/ decoded RawShares secrets x(any w/ more than 1
     constitutent Share has been validated against its digest).  Produce the cartesian product of
     groups g0, g1, ..., gN, to see if we can recover any EncryptedMasterSecrets.  The possibles: {x:
@@ -362,9 +364,9 @@ def locate_ems_rawshares(
                 )
                 using: Dict[RawShare, ShareGroup] = {}
                 for rawshare in rawshares:
-                    # always pops at least one, then gets if 'complete'
+                    # always pops at least one
                     if complete and using:
-                        using[rawshare] = possibles[rawshare.x].get(rawshare)
+                        using[rawshare] = possibles[rawshare.x][rawshare]
                     else:
                         using[rawshare] = possibles[rawshare.x].pop(rawshare)
                 yield ems, using
@@ -478,10 +480,12 @@ def group_ems_rawshares(
     mnemonics: Iterable[Union[str, Share]],
     strict: bool = False,  # Fail if any Share is found to be invalid
     complete: bool = False,  # Find all related Shares, Groups instead of minimal
-) -> Sequence[
+) -> Generator[
     Tuple[
         Tuple[EncryptedMasterSecret, ShareCommonParameters], Dict[RawShare, ShareGroup]
-    ]
+    ],
+    None,
+    None,
 ]:
     """Attempt to yield a sequence of uniquely decoded EncryptedMasterSecrets and their SLIP-39
     encoding parameters, and the dictionary of group indices -> set(<Share>) used to recover each
@@ -673,7 +677,7 @@ def group_ems_mnemonics(
     strict: bool = False,  # Fail if any Share is found to be invalid
     complete: bool = False,  # Find all related Shares, Groups instead of minimal
     expand: Optional[Sequence[Tuple[int, Optional[int]]]] = None,
-) -> Sequence[Tuple[EncryptedMasterSecret, Dict[int, Set[str]]]]:
+) -> Generator[Tuple[EncryptedMasterSecret, Dict[int, Set[str]]], None, None]:
     """Here we just care about the recovered EMSs and their mnemonics.  Discard details about the specific
     encodings used.  We could yield the same EMS recovered with different sets of Mnemonics.
 

@@ -12,7 +12,7 @@ VENV		= $(CURDIR)-$(VERSION)-$(PYTHON_V)
 export VENV_OPTS	?=
 export POETRY		?= poetry
 export PYTEST		?= pytest
-export PYTEST_OPTS	?= # -vv --capture=no
+export PYTEST_OPTS	?= # -vv --capture=no --mypy
 
 
 build:
