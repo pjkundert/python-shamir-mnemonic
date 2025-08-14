@@ -95,6 +95,18 @@ You can specify a custom scheme. For example, to create three groups, with 2-of-
 
 Use :code:`shamir --help` or :code:`shamir create --help` to see all available options.
 
+To expand an existing group 3 to include 10 mnemonics, use:
+
+.. code-block:: console
+
+    $ shamir expand --change 3 10
+
+Enter mnemonics sufficient to recover the master secret, including all of the group(s) you desire to
+:code:`--change`.  However, you may elect to replace a missing group with a new single-Share group
+(if you don't specify :code:`--strict`).
+
+Use :code:`shamir --help` or :code:`shamir expand --help` to see all available options.
+
 If you want to run the CLI from a local checkout without installing, use the following
 command:
 

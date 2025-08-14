@@ -571,7 +571,7 @@ def expand_group(
     using: Dict[RawShare, ShareGroup],
     common_params: ShareCommonParameters,
     group: int,
-    desired: Optional[int] = None,
+    desired: Optional[int] = None,  # 0/None are equivalent
     strict: bool = False,
 ) -> None:
     """If sufficient group secrets are provided, we can recover the full spectrum of original group
@@ -588,7 +588,7 @@ def expand_group(
         if rg.x == group:
             # Found the target group in recoverable EMS RawGroups!
             grouping = next(iter(sg.shares)).group_parameters()
-            if desired is None:
+            if not desired:
                 desired = grouping.member_threshold
             if desired < grouping.member_threshold or grouping.member_threshold == 1:
                 # They want fewer members than current threshold (impossible to do while
@@ -676,7 +676,7 @@ def group_ems_mnemonics(
     mnemonics: Iterable[Union[str, Share]],
     strict: bool = False,  # Fail if any Share is found to be invalid
     complete: bool = False,  # Find all related Shares, Groups instead of minimal
-    expand: Optional[Sequence[Tuple[int, Optional[int]]]] = None,
+    expand: Optional[Iterable[Tuple[int, Optional[int]]]] = None,
 ) -> Generator[Tuple[EncryptedMasterSecret, Dict[int, Set[str]]], None, None]:
     """Here we just care about the recovered EMSs and their mnemonics.  Discard details about the specific
     encodings used.  We could yield the same EMS recovered with different sets of Mnemonics.
