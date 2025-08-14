@@ -583,13 +583,17 @@ def expand_group(
     of the originally generated group RawShare secrets (including additional entropy), allowing us
     to expand the group to include new mnemonics compatible with the existing mnemonics.
 
+    It isn't possible to know how many shares in addition to the minimum member_threshold were
+    originally produced; if desired is 0/None, we'll try to pick a sensible default; twice the
+    member_threshold for multi-Share groups (or the greatest share index actually provided).
+
     """
     for rg, sg in using.items():
         if rg.x == group:
             # Found the target group in recoverable EMS RawGroups!
             grouping = next(iter(sg.shares)).group_parameters()
             if not desired:
-                desired = grouping.member_threshold
+                desired = max(min(grouping.member_threshold * 2, MAX_SHARE_COUNT), *(s.index + 1 for s in sg.shares))
             if desired < grouping.member_threshold or grouping.member_threshold == 1:
                 # They want fewer members than current threshold (impossible to do while
                 # retaining compatibility with existing mnemonics), or threshold == 1.

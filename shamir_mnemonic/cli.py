@@ -280,7 +280,7 @@ def expand(passphrase_prompt: bool, expand: Iterable[Tuple[int, Optional[int]]],
     )
     for group,mnems in sorted(expanded.items()):
         if group in expand:
-            click.echo(f"Group {group} (expanded to {expand[group]}:" )
+            click.echo(f"Group {group} (expanded to {expand[group] or 'default'}):" )
         else:
             click.echo(f"Group {group}:" )
         for mn in mnems:
