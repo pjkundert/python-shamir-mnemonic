@@ -674,6 +674,35 @@ def test_group_ems_mnemonics(monkeypatch):
     assert deepset(recovered) < expected
 
 
+ones = b"\xff" * 16
+ones_mnemonics = {
+    # First 1/1
+    0: {
+        "olympic guilt acrobat romp dining inform withdraw brave lips quarter bulge thorn best wildlife alive yelp home security lilac eclipse",
+    },
+    # Second 1/1
+    1: {
+        "olympic guilt beard romp apart preach various garden always mayor solution acid quantity domestic slush zero fatigue disaster fluff romp",
+    },
+    # Fam 2/4
+    2: {
+        "olympic guilt ceramic roster agency evidence beard emerald triumph crystal flip threaten yield slow dwarf mason together kidney center memory",
+        "olympic guilt ceramic scared dream shrimp upgrade flip scroll cylinder evaluate acquire evening idle omit learn impulse custody estimate blanket",
+        "olympic guilt ceramic shadow density false spark hesitate desert counter born omit smoking preach beyond dilemma aunt switch revenue peanut",
+        "olympic guilt ceramic sister angel speak deliver idea brave crazy aide isolate grasp birthday pulse domestic object market squeeze dismiss",
+    },
+    # Frens 3/6
+    3: {
+        "olympic guilt decision round animal velvet bedroom species railroad energy findings general laden estate music ordinary tolerate duration photo laden",
+        "olympic guilt decision scatter agency speak rapids quantity slice mustang fragment universe tackle screw wrist install moisture ticket founder display",
+        "olympic guilt decision shaft auction various lyrics amazing peasant withdraw editor swing makeup review analysis physics capacity marathon beaver divorce",
+        "olympic guilt decision skin acrobat spelling dance guest sugar crunch envy fancy cradle declare gasoline exceed hairy flash ugly language",
+        "olympic guilt decision snake costume teaspoon aluminum deadline steady cricket subject bedroom acrobat elbow numb material scatter dramatic capture advance",
+        "olympic guilt decision spider coastal round promise expect paper width spelling ounce party smart username grin provide tracks theater engage",
+    },
+}
+
+
 def test_group_expand():
     """Confirm that we can recover an EMS from a groups of SLIP-39 mnemonics, and "expand" those
     groups to include more mnemonics compatible with the existing ones.
@@ -681,33 +710,6 @@ def test_group_expand():
     We'll use a pre-generated 2 of 1/1, 1/1, 2/4 and 3/6 grouping.
 
     """
-    ones = b"\xff" * 16
-    ones_mnemonics = {
-        # First 1/1
-        0: {
-            "olympic guilt acrobat romp dining inform withdraw brave lips quarter bulge thorn best wildlife alive yelp home security lilac eclipse",
-        },
-        # Second 1/1
-        1: {
-            "olympic guilt beard romp apart preach various garden always mayor solution acid quantity domestic slush zero fatigue disaster fluff romp",
-        },
-        # Fam 2/4
-        2: {
-            "olympic guilt ceramic roster agency evidence beard emerald triumph crystal flip threaten yield slow dwarf mason together kidney center memory",
-            "olympic guilt ceramic scared dream shrimp upgrade flip scroll cylinder evaluate acquire evening idle omit learn impulse custody estimate blanket",
-            "olympic guilt ceramic shadow density false spark hesitate desert counter born omit smoking preach beyond dilemma aunt switch revenue peanut",
-            "olympic guilt ceramic sister angel speak deliver idea brave crazy aide isolate grasp birthday pulse domestic object market squeeze dismiss",
-        },
-        # Frens 3/6
-        3: {
-            "olympic guilt decision round animal velvet bedroom species railroad energy findings general laden estate music ordinary tolerate duration photo laden",
-            "olympic guilt decision scatter agency speak rapids quantity slice mustang fragment universe tackle screw wrist install moisture ticket founder display",
-            "olympic guilt decision shaft auction various lyrics amazing peasant withdraw editor swing makeup review analysis physics capacity marathon beaver divorce",
-            "olympic guilt decision skin acrobat spelling dance guest sugar crunch envy fancy cradle declare gasoline exceed hairy flash ugly language",
-            "olympic guilt decision snake costume teaspoon aluminum deadline steady cricket subject bedroom acrobat elbow numb material scatter dramatic capture advance",
-            "olympic guilt decision spider coastal round promise expect paper width spelling ounce party smart username grin provide tracks theater engage",
-        },
-    }
 
     # We can recover the original "zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo wrong" =~=
     # 0xffffffffffffffffffffffffffffffff seed and all of the supplied mnemonics are valid and
@@ -718,7 +720,8 @@ def test_group_expand():
     assert ems.decrypt(b"") == ones
     assert recovered == ones_mnemonics
 
-    # Now, lets only supply the Fam and Frens, and ensure we can get back the 1/1 shares
+    # Now, lets only supply the Fam and Frens, and ensure we can get back the 1/1 shares.  Since
+    # they contain no additional entropy, they will always match the original 1/1 shares.
     ((ems, recovered),) = shamir.group_ems_mnemonics(
         set.union(ones_mnemonics[2], ones_mnemonics[3])
     )
@@ -750,7 +753,7 @@ def test_group_expand():
         "olympic guilt beard romp apart preach various garden always mayor solution acid quantity domestic slush zero fatigue disaster fluff romp",
     }
 
-    # OK, we've recovered 2 1/1 groups.  Now, lets see if we can expand an existing threshold/count
+    # OK, we've recovered 2 1/1 groups.  Now, let's see if we can expand an existing threshold/count
     # group to increase the group's member count.  Let's increase Frens from a 3/6 to a larger 3/10
     ((ems, recovered),) = shamir.group_ems_mnemonics(
         set.union(ones_mnemonics[0], ones_mnemonics[3]),
@@ -761,8 +764,39 @@ def test_group_expand():
     assert (
         deepset(ones_mnemonics[3]) < recovered[3]
     )  # In fact, original group 3 is now a subset!
-    print(
-        json.dumps(
-            {str(ems): group for ems, group in recovered.items()}, indent=4, default=str
+    # print(
+    #     json.dumps(
+    #         {str(ems): group for ems, group in recovered.items()}, indent=4, default=str
+    #     )
+    # )
+
+
+def test_group_expand_failures():
+    # Too many mnemonics are disallowed
+    with pytest.raises(ValueError):
+        ((ems, recovered),) = shamir.group_ems_mnemonics(
+            set.union(ones_mnemonics[0], ones_mnemonics[3]),
+            expand=[(3, 17)],
         )
+    # Replacing a multi-Share group is disallowed if 'strict'
+    with pytest.raises(MnemonicError):
+        ((ems, recovered),) = shamir.group_ems_mnemonics(
+            set.union(ones_mnemonics[0], ones_mnemonics[3]),
+            expand=[(3, 1)],
+            strict=True,
+        )
+    # ... but allowed if not 'strict'
+    ((ems, recovered),) = shamir.group_ems_mnemonics(
+        set.union(ones_mnemonics[0], ones_mnemonics[3]),
+        expand=[(3, 1)],
     )
+    # And the resultant single-mnemonic group is usable to recover the Encrypted Master Secret
+    # print(
+    #     json.dumps(
+    #         {str(ems): group for ems, group in recovered.items()}, indent=4, default=str
+    #     )
+    # )
+    ((ems, recovered),) = shamir.group_ems_mnemonics(
+        set.union(recovered[0], recovered[3]),
+    )
+    assert ems.decrypt(b"") == ones

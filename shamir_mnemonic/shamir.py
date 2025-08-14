@@ -93,7 +93,7 @@ class ShareGroup:
     def get_minimal_group(self) -> "ShareGroup":
         return next(self.get_possible_groups())
 
-    def get_possible_groups(self) -> "ShareGroup":
+    def get_possible_groups(self) -> Iterator["ShareGroup"]:
         """Return successive member_threshold length groups of indices into the available shares.
         If the shares are all valid, each group of mnemonics would be equivalent and sufficient to
         use in recovery.  But, if any mnemonic(s) are corrupted we need to avoid using them.
@@ -298,17 +298,17 @@ def _recover_secret(threshold: int, shares: Sequence[RawShare]) -> bytes:
     return shared_secret
 
 
-def _recover_base_rawshares(
+def _recover_secret_rawshares(
     threshold: int, share_count: int, shares: Sequence[RawShare]
 ) -> Sequence[RawShare]:
-    """In addition to just the secret and its digest, we can recover all of a group's original
-    RawShares used to produce its group Shares.
+    """In addition to just the secret and its digest, we can recover all of a secret's original
+    RawShares, that were used to produce its derived Shares.  This is the inverse of _split_secret.
 
     This allows us to regenerate missing Shares, or even expand a group's member Shares while
     retaining compatibility with the existing Shares.
 
     """
-    group_secret = _recover_secret(threshold, shares)  # verifies the digest
+    shared_secret = _recover_secret(threshold, shares)  # verifies the digest
     digest_share = _interpolate(shares, DIGEST_INDEX)
     if threshold < 2 or len(shares) < threshold or share_count < threshold:
         raise MnemonicError(
@@ -317,7 +317,7 @@ def _recover_base_rawshares(
     random_share_count = threshold - 2
     shares = [RawShare(i, _interpolate(shares, i)) for i in range(random_share_count)]
     base_shares = shares + [
-        RawShare(SECRET_INDEX, group_secret),
+        RawShare(SECRET_INDEX, shared_secret),
         RawShare(DIGEST_INDEX, digest_share),
     ]
     return shares + [
@@ -331,7 +331,7 @@ def locate_ems_rawshares(
     possibles: Dict[int, Dict[RawShare, ShareGroup]],
     complete: bool = False,
 ) -> Sequence[Tuple[EncryptedMasterSecret, Dict[RawShare, ShareGroup]]]:
-    """We have the available group indices w/ decoded RawShares secrets (any w/ more than 1
+    """We have the available group indices w/ decoded RawShares secrets x(any w/ more than 1
     constitutent Share has been validated against its digest).  Produce the cartesian product of
     groups g0, g1, ..., gN, to see if we can recover any EncryptedMasterSecrets.  The possibles: {x:
     -> {RawGroup: ShareGroup}} gives us a sequence of RawGroup(s) for group index x.
@@ -362,12 +362,13 @@ def locate_ems_rawshares(
                 )
                 using: Dict[RawShare, ShareGroup] = {}
                 for rawshare in rawshares:
+                    # always pops at least one, then gets if 'complete'
                     if complete and using:
                         using[rawshare] = possibles[rawshare.x].get(rawshare)
                     else:
                         using[rawshare] = possibles[rawshare.x].pop(rawshare)
                 yield ems, using
-            except Exception:
+            except MnemonicError:
                 pass
 
 
@@ -444,7 +445,7 @@ def recover_group_rawshares(
                             grouping.member_threshold, shareminimal.to_raw_shares()
                         ),
                     )
-                except Exception as exc:
+                except Exception:
                     pass
                 else:
                     # We found (another?) minimal ShareGroup subset of sharegroup that leads to
@@ -562,13 +563,116 @@ def group_ems_rawshares(
         raise MnemonicError("Invalid set of mnemonics; No encoded secret found")
 
 
+def expand_group(
+    using: Dict[RawShare, ShareGroup],
+    common_params: ShareCommonParameters,
+    group: int,
+    desired: Optional[int] = None,
+    strict: bool = False,
+) -> None:
+    """If sufficient group secrets are provided, we can recover the full spectrum of original group
+    RawShares.  This recovers all base RawShare secrets (including additional entropy), and is
+    sufficient to produce new (or replacement) 1/1 Shares for every group (even replace multi-Share
+    groups with a new single-Share group, if not 'strict').
+
+    For any group with sufficient mnemonics supplied to recover that group, we can also recover all
+    of the originally generated group RawShare secrets (including additional entropy), allowing us
+    to expand the group to include new mnemonics compatible with the existing mnemonics.
+
+    """
+    for rg, sg in using.items():
+        if rg.x == group:
+            # Found the target group in recoverable EMS RawGroups!
+            grouping = next(iter(sg.shares)).group_parameters()
+            if desired is None:
+                desired = grouping.member_threshold
+            if desired < grouping.member_threshold or grouping.member_threshold == 1:
+                # They want fewer members than current threshold (impossible to do while
+                # retaining compatibility with existing mnemonics), or threshold == 1.
+                # We'll handle the special desired=1 case in loop exhaustion.
+                continue
+            if desired > MAX_SHARE_COUNT:
+                raise ValueError(
+                    f"The requested number of shares must not exceed {MAX_SHARE_COUNT}."
+                )
+            # Ready to expand!  Recover all the group's (original) RawShares from the
+            # supplied shares, and then use them to produce any missing Shares.  This is
+            # (group_threshold - 2) random RawShares at indices [0,group_threshold-2), plus
+            # the group secret RawShare at index 255 and the digest RawShare at index 254.
+            shares = {
+                Share(
+                    common_params.identifier,
+                    common_params.extendable,
+                    common_params.iteration_exponent,
+                    group,
+                    common_params.group_threshold,
+                    common_params.group_count,
+                    member_index,
+                    grouping.member_threshold,
+                    value,
+                )
+                for member_index, value in _recover_secret_rawshares(
+                    grouping.member_threshold, desired, sg.to_raw_shares()
+                )
+            }
+            if not sg.shares <= shares:
+                # Expanding a group must never produce incompatible mnemonics!
+                raise MnemonicError(
+                    f"Expanding group {grouping.group_index} to {desired} Shares produced incompatible mnemonics"
+                )
+            sg.shares = shares
+            break
+    else:
+        # Recovered groups exhausted; group not found in recoverable EMS RawShares.  We can satisfy
+        # desired=1 for any group, even replacing a group if not 'strict'.
+        if desired == 1 and group < common_params.group_count:
+            # We're able to produce a single Share for *any* group; even one not provided in
+            # the supplied mnemonic shares, or previously defined as having a threshold
+            # greater than one!  This allows us to abandon a known-failed multi-mnemonic
+            # group and replace it with a new single mnemonic (or recover a missing
+            # threshold 1 group), if we have sufficient *other* groups to recover the
+            # Encrypted Master Secret.  Here, we have to recover the full sequence of group
+            # secrets underpinning the EMS's ciphertext.
+            for group_index, value in _recover_secret_rawshares(
+                common_params.group_threshold,
+                common_params.group_count,
+                using.keys(),
+            ):
+                if group == group_index:
+                    shares = {
+                        Share(
+                            common_params.identifier,
+                            common_params.extendable,
+                            common_params.iteration_exponent,
+                            group,
+                            common_params.group_threshold,
+                            common_params.group_count,
+                            0,
+                            1,
+                            value,
+                        )
+                    }
+                    rg = RawShare(group, value)
+                    sg = using.setdefault(rg, ShareGroup())
+                    if strict and not sg.shares <= shares:
+                        # If 'strict', we won't allow you to replace a multi-mnemonic share group
+                        # with a new single threshold group.
+                        sg_threshold = (
+                            next(iter(sg.shares)).group_parameters().member_threshold
+                        )
+                        raise MnemonicError(
+                            f"Incompatible single-Share group {group} produced for existing {sg_threshold}-Share group"
+                        )
+                    sg.shares = shares
+        elif strict:
+            raise MnemonicError(f"Group {group} not recoverable in supplied mnemonics")
+
+
 def group_ems_mnemonics(
     mnemonics: Iterable[Union[str, Share]],
     strict: bool = False,  # Fail if any Share is found to be invalid
     complete: bool = False,  # Find all related Shares, Groups instead of minimal
-    expand: Optional[
-        Sequence[Tuple[int, [Optional[int]]]]
-    ] = None,  # group numbers, and desired members (or None)
+    expand: Optional[Sequence[Tuple[int, Optional[int]]]] = None,
 ) -> Sequence[Tuple[EncryptedMasterSecret, Dict[int, Set[str]]]]:
     """Here we just care about the recovered EMSs and their mnemonics.  Discard details about the specific
     encodings used.  We could yield the same EMS recovered with different sets of Mnemonics.
@@ -579,99 +683,13 @@ def group_ems_mnemonics(
     share threshold of 1.  Any existing group may be also be converted into a group with threshold 1
     in this fashion.  Unless 'script', any group not found to be expandable will be ignored.
 
+    Yields the EMS and its recovered group(s), possibly expanded or (if not 'strict') even replaced
+    with a new single-mnemonic group.
+
     """
     for (ems, common_params), using in group_ems_rawshares(mnemonics, strict, complete):
         for group, desired in expand or []:
-            for rg, sg in using.items():
-                if rg.x == group:
-                    # Found the target group in recoverable EMS RawGroups!
-                    grouping = next(iter(sg.shares)).group_parameters()
-                    if desired is None:
-                        desired = grouping.member_threshold
-                    if (
-                        desired < grouping.member_threshold
-                        or grouping.member_threshold == 1
-                    ):
-                        # They want fewer members than current threshold (impossible to do while
-                        # retaining compatibility with existing mnemonics), or threshold == 1.
-                        # We'll handle the special desired=1 case in loop exhaustion.
-                        continue
-                    # Ready to expand!  Recover all the group's (original) RawShares from the
-                    # supplied shares, and then use them to produce any missing Shares.  This is
-                    # (group_threshold - 2) random RawShares at indices [0,group_threshold-2), plus
-                    # the group secret RawShare at index 255 and the digest RawShare at index 254.
-                    shares = {
-                        Share(
-                            ems.identifier,
-                            ems.extendable,
-                            ems.iteration_exponent,
-                            group,
-                            common_params.group_threshold,
-                            common_params.group_count,
-                            member_index,
-                            grouping.member_threshold,
-                            value,
-                        )
-                        for member_index, value in _recover_base_rawshares(
-                            grouping.member_threshold, desired, sg.to_raw_shares()
-                        )
-                    }
-                    if not sg.shares <= shares:
-                        raise MnemonicError(
-                            f"Expanding group {grouping.group_index} to {desired} Shares produced incompatible mnemonics"
-                        )
-                    sg.shares = shares
-                    break
-            else:
-                # Recovered groups exhausted; expanded group not found in recoverable EMS RawShares.
-                # We can only handle desired=1 for an existing group.
-                if desired == 1 and group < common_params.group_count:
-                    # We're able to produce a single Share for *any* group; even one not provided in
-                    # the supplied mnemonic shares, or previously defined as having a threshold
-                    # greater than one!  This allows us to abandon a known-failed multi-mnemonic
-                    # group and replace it with a new single mnemonic (or recover a missing
-                    # threshold 1 group), if we have sufficient *other* groups to recover the
-                    # Encrypted Master Secret.  Here, we have to recover the full sequence of group
-                    # secrets underpinning the EMS's ciphertext.
-                    for group_index, value in _recover_base_rawshares(
-                        common_params.group_threshold,
-                        common_params.group_count,
-                        using.keys(),
-                    ):
-                        if group == group_index:
-                            shares = {
-                                Share(
-                                    ems.identifier,
-                                    ems.extendable,
-                                    ems.iteration_exponent,
-                                    group,
-                                    common_params.group_threshold,
-                                    common_params.group_count,
-                                    0,
-                                    1,
-                                    value,
-                                )
-                            }
-                            rg = RawShare(group, value)
-                            # assert (rg in using) == bool(
-                            #     len(filter(lambda urg: urg.x == group, using))
-                            # ), f"Incompatible group {group} secret {rg!r} recovered, not matching {using.values()!r}"
-                            if rg in using:
-                                sg = using[rg]
-                                if strict and shares != sg.shares:
-                                    # If 'strict', we won't allow you to replace a recovered multi-mnemonic share group with a new single threshold group.
-                                    raise MnemnonicError(
-                                        f"Incompatible group {group} Share {shares!r} produced, not matching {sg.shares!r}"
-                                    )
-                            else:
-                                sg = ShareGroup()
-                                using[rg] = sg
-                            sg.shares = shares
-                elif strict:
-                    raise MnemonicError(
-                        f"Group {group} not recoverable in supplied mnemonics"
-                    )
-        # Yields the EMS and its recovered group(s), possibly expanded or even replaced with a new single-mnemonic group
+            expand_group(using, common_params, group, desired, strict)
         yield ems, {rg.x: set(map(str, sg.shares)) for rg, sg in using.items()}
 
 
