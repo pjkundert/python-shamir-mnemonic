@@ -593,7 +593,10 @@ def expand_group(
             # Found the target group in recoverable EMS RawGroups!
             grouping = next(iter(sg.shares)).group_parameters()
             if not desired:
-                desired = max(min(grouping.member_threshold * 2, MAX_SHARE_COUNT), *(s.index + 1 for s in sg.shares))
+                desired = max(
+                    min(grouping.member_threshold * 2, MAX_SHARE_COUNT),
+                    *(s.index + 1 for s in sg.shares),
+                )
             if desired < grouping.member_threshold or grouping.member_threshold == 1:
                 # They want fewer members than current threshold (impossible to do while
                 # retaining compatibility with existing mnemonics), or threshold == 1.

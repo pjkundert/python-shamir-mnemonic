@@ -234,6 +234,7 @@ def recovery(passphrase_prompt: bool) -> None:
     click.secho("SUCCESS!", fg="green", bold=True)
     click.echo(f"Your master secret is: {master_secret.hex()}")
 
+
 recovery.state = RecoveryState()
 
 
@@ -264,7 +265,12 @@ recovery.state = RecoveryState()
     default=False,
     help="Try to use and assign every mnemonic supplied, even if not necessary for recovery.",
 )
-def expand(passphrase_prompt: bool, expand: Iterable[Tuple[int, Optional[int]]], strict: bool, complete: bool) -> None:
+def expand(
+    passphrase_prompt: bool,
+    expand: Iterable[Tuple[int, Optional[int]]],
+    strict: bool,
+    complete: bool,
+) -> None:
     """Recover and expand a Shamir mnemonic set
 
     Displays the (possibly expanded) mnemonics recovered.
@@ -272,19 +278,20 @@ def expand(passphrase_prompt: bool, expand: Iterable[Tuple[int, Optional[int]]],
     recovery(passphrase_prompt)
     mnemonics = set.union(*(sg.shares for sg in recovery.state.groups.values()))
     expand = dict(expand)
-    (ems,expanded), = group_ems_mnemonics(
+    ((ems, expanded),) = group_ems_mnemonics(
         mnemonics=mnemonics,
         strict=strict,
         complete=complete,
         expand=expand.items(),
     )
-    for group,mnems in sorted(expanded.items()):
+    for group, mnems in sorted(expanded.items()):
         if group in expand:
-            click.echo(f"Group {group} (expanded to {expand[group] or 'default'}):" )
+            click.echo(f"Group {group} (expanded to {expand[group] or 'default'}):")
         else:
-            click.echo(f"Group {group}:" )
+            click.echo(f"Group {group}:")
         for mn in mnems:
-            click.echo(f" {mn}" )
+            click.echo(f" {mn}")
+
 
 if __name__ == "__main__":
     cli()
