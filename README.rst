@@ -32,6 +32,28 @@ open, and calculations are most likely trivially vulnerable to side-channel atta
 The purpose of this code is to verify correctness of other implementations. **It should
 not be used for handling sensitive secrets**.
 
+Extendable encrypted master secrets
+-----------------------------------
+
+When you SLIP-39 encode a master secret with a password, you can always recover the original secret
+with the same password.  You of course get a **different** secret (ie. a different wallet) with a
+different password; this is by design: you can (for example) have a master password for your true
+wallet containing your funds, and a "decoy" password for a valid wallet that contains funds to
+satisfy an attacker.  Or, you may simply derive multiple wallets for different purposes with
+different passwords.
+
+The mnemonics are by default "extendable", meaning that you can re-encode the same master secret
+again (with different SLIP-39 group specs), and get the same decrypted secret back with the original
+password, and the **same** wallets with your other passwords.
+
+If desired, you can produce **--no-extendable** encrypted master secrets (which used to be the
+SLIP-39 standard), which always recover the original secret with the original password -- but
+produce **different** secrets for all other passwords.  This only causes surprises when you want to
+re-encrypt the same master secret again: you can't re-obtain the **other** passwords' wallets using
+the newly encoded mnemonics!
+
+To reduce surprises, SLIP-39 now produces **--extendable** encrypted master secrets by default.
+
 Installation
 ------------
 
@@ -94,6 +116,12 @@ You can specify a custom scheme. For example, to create three groups, with 2-of-
     $ shamir create custom --group-threshold 3 --group 2 3 --group 2 5 --group 4 5
 
 Use :code:`shamir --help` or :code:`shamir create --help` to see all available options.
+
+CLI usage: expand an existing mnemonic group
+--------------------------------------------
+
+If you wish to increase the number of mnemonics in an existing multi-mnemonic group, you can now do
+this.  All existing mnemonics remain valid.
 
 To expand an existing group 3 to include 10 mnemonics, use:
 

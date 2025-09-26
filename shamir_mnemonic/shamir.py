@@ -818,6 +818,7 @@ def generate_mnemonics(
         reconstruct the group secret.
     :param master_secret: The master secret to split.
     :param passphrase: The passphrase used to encrypt the master secret.
+    :param extendable: Re-encoding of the same secret yields deterministic secrets when decrypted with other passwords
     :param int iteration_exponent: The encryption iteration exponent.
     :return: List of groups mnemonics.
     """

@@ -56,6 +56,78 @@ def test_iteration_exponent():
     assert MS != shamir.combine_mnemonics(mnemonics[1:4])
 
 
+def test_extendable_encryption_behavior():
+    """Test that the extendable parameter affects encryption determinism.
+
+    With extendable=False: same secret encrypted twice with different identifiers
+    produces different encrypted results, even with same passphrase.
+
+    With extendable=True: same secret always produces the same encrypted result
+    when using the same passphrase, regardless of identifier.
+    """
+    fixed_secret = b"ABCDEFGHIJKLMNOP"
+    passphrase1 = b"password1"
+    passphrase2 = b"password2"
+
+    # Test extendable=False behavior
+    # Same secret, same passphrase, different identifiers -> different encrypted results
+    ems_nonext_id1 = shamir.EncryptedMasterSecret.from_master_secret(
+        fixed_secret, passphrase1, identifier=1, extendable=False, iteration_exponent=1
+    )
+    ems_nonext_id1a = shamir.EncryptedMasterSecret.from_master_secret(
+        fixed_secret, passphrase1, identifier=1, extendable=False, iteration_exponent=1
+    )
+    ems_nonext_id2 = shamir.EncryptedMasterSecret.from_master_secret(
+        fixed_secret, passphrase1, identifier=2, extendable=False, iteration_exponent=1
+    )
+
+    # With extendable=False, the same encryption parameters produces the same ciphertext, and
+    # different identifier value produces *different* encrypted results
+    assert ems_nonext_id1.ciphertext == ems_nonext_id1a.ciphertext
+    assert ems_nonext_id1.ciphertext != ems_nonext_id2.ciphertext
+
+    # But both decrypt to the original secret with the correct passphrase
+    assert ems_nonext_id1.decrypt(passphrase1) == fixed_secret
+    assert ems_nonext_id2.decrypt(passphrase1) == fixed_secret
+
+    # With extendable=False and wrong passphrase, they decrypt to different (wrong) secrets.  This
+    # may be surprising; re-encoding the same master secret yields different custom/decoy wallets
+    # with each re-encoding.
+    wrong_secret1 = ems_nonext_id1.decrypt(passphrase2)
+    wrong_secret2 = ems_nonext_id2.decrypt(passphrase2)
+    assert wrong_secret1 != fixed_secret
+    assert wrong_secret2 != fixed_secret
+    assert wrong_secret1 != wrong_secret2  # Different wrong secrets
+
+    # Test extendable=True behavior
+    # Same secret, same passphrase, different identifiers -> same encrypted results
+    ems_ext_id1 = shamir.EncryptedMasterSecret.from_master_secret(
+        fixed_secret, passphrase1, identifier=1, extendable=True, iteration_exponent=1
+    )
+    ems_ext_id1a = shamir.EncryptedMasterSecret.from_master_secret(
+        fixed_secret, passphrase1, identifier=1, extendable=True, iteration_exponent=1
+    )
+    ems_ext_id2 = shamir.EncryptedMasterSecret.from_master_secret(
+        fixed_secret, passphrase1, identifier=2, extendable=True, iteration_exponent=1
+    )
+
+    # With extendable=True, the same encryption parameters produces the same ciphertext, and
+    # different identifier value now produces *the same* encrypted results
+    assert ems_ext_id1.ciphertext == ems_ext_id1a.ciphertext
+    assert ems_ext_id1.ciphertext == ems_ext_id2.ciphertext
+
+    # Both decrypt to the original secret with the correct passphrase
+    assert ems_ext_id1.decrypt(passphrase1) == fixed_secret
+    assert ems_ext_id2.decrypt(passphrase1) == fixed_secret
+
+    # With wrong passphrase, they decrypt to the same (wrong) secret
+    wrong_secret_ext1 = ems_ext_id1.decrypt(passphrase2)
+    wrong_secret_ext2 = ems_ext_id2.decrypt(passphrase2)
+    assert wrong_secret_ext1 != fixed_secret
+    assert wrong_secret_ext2 != fixed_secret
+    assert wrong_secret_ext1 == wrong_secret_ext2  # Same wrong secret
+
+
 def test_group_sharing():
     group_threshold = 2
     group_sizes = (5, 3, 5, 1)
@@ -292,7 +364,7 @@ def test_group_ems_mnemonics(monkeypatch):
     assert mnemonics_nonext_b[1] > mnemonics_nonext_a[1]
     assert mnemonics_nonext_b[2] > mnemonics_nonext_a[2]
 
-    # Now, generate an identically encrypted EMS (since we have eliminated all entropy), only differing in 'extenable'.
+    # Now, generate an identically encrypted EMS (since we have eliminated all entropy), only differing in 'extendable'.
     ems_MS_extend = shamir.EncryptedMasterSecret.from_master_secret(
         MS, b"TREZOR", identifier=0, extendable=True, iteration_exponent=1
     )
