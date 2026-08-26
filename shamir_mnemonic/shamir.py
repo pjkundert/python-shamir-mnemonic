@@ -749,6 +749,350 @@ def group_ems_mnemonics(
         yield ems, {rg.x: set(map(str, sg.shares)) for rg, sg in using.items()}
 
 
+def _default_member_count(member_threshold: int, indices: Iterable[int]) -> int:
+    """A sensible member count when the caller doesn't state one.  The originally
+    generated count is not recoverable from the cards, so use the evidence at hand:
+    at least one past the highest member index seen and, for multi-card groups, room
+    to spare at twice the member threshold (the same default expand_group selects).
+    A real ceremony should state its member count explicitly."""
+    if member_threshold == 1:
+        return 1
+    return max(
+        min(member_threshold * 2, MAX_SHARE_COUNT),
+        *(index + 1 for index in indices),
+    )
+
+
+@dataclass(frozen=True)
+class GroupCeremony:
+    """The result of a single-group ceremony performed by `group_one_mnemonics`.
+
+    Carries the produced card set, the original cards used and the pinned scheme
+    metadata, plus a printable ceremony `report()`.  The report is part of the
+    ceremony: software cannot destroy paper, so for a REVOKE-stance reissue the
+    report states the destruction requirement that makes the revocation real.
+
+    Stances:
+
+    - "identical" (an expand): every produced card lies on the group's ORIGINAL
+      member polynomial; provided cards reappear verbatim, missing/additional ones
+      are minted exactly as original generation would have.  Nothing is revoked.
+    - "augment" (a reissue): the produced cards lie on a FRESH member polynomial.
+      Old set and new set are parallel encodings of the same group secret; each
+      independently satisfies the group, and any old+new mixture is refused by the
+      share digest.  The old cards remain a live path to the group secret.
+    - "revoke" (a reissue): cryptographically identical to "augment"; the stance
+      records the intent that the old card set is to be RETIRED, and the report
+      carries the destruction requirement.
+    """
+
+    ceremony: str  # "expand" (original member polynomial) or "reissue" (fresh)
+    stance: str  # "identical" (expand), "augment" or "revoke" (reissue)
+    common: ShareCommonParameters  # pinned scheme-level metadata
+    grouping: ShareGroupParameters  # the ORIGINAL group parameters
+    member_threshold: int  # member threshold of the produced card set
+    used: Tuple[Share, ...]  # original cards consumed, sorted by member index
+    shares: Tuple[Share, ...]  # produced card set, sorted by member index
+
+    def mnemonics(self) -> List[str]:
+        """The produced card set, as mnemonic strings (sorted by member index)."""
+        return [share.mnemonic() for share in self.shares]
+
+    @property
+    def minted(self) -> Tuple[Share, ...]:
+        """The produced cards that were not among the cards provided: for an expand,
+        exactly the re-minted and/or additional cards; for a reissue, every card."""
+        provided = set(self.used)
+        return tuple(share for share in self.shares if share not in provided)
+
+    def report(self) -> str:
+        """A printable ceremony report: what was produced, what the mathematics
+        guarantees, and -- for the REVOKE stance -- the destruction requirement
+        that only procedure can satisfy."""
+        title = {
+            "identical": "EXPAND (regenerate-identical)",
+            "augment": "REISSUE (stance: AUGMENT)",
+            "revoke": "REISSUE (stance: REVOKE)",
+        }[self.stance]
+        used_indices = ", ".join(str(share.index) for share in self.used)
+        threshold = self.grouping.member_threshold
+        lines = [
+            f"SLIP-39 single-group ceremony: {title}",
+            f"  scheme:    identifier {self.common.identifier}, "
+            + ("extendable, " if self.common.extendable else "non-extendable, ")
+            + f"iteration exponent {self.common.iteration_exponent}",
+            f"  group:     index {self.grouping.group_index}"
+            f" (group threshold {self.common.group_threshold}"
+            f" of {self.common.group_count} groups)",
+            f"  original:  member threshold {threshold},"
+            f" member indices provided: {used_indices}",
+            f"  produced:  {len(self.shares)} card(s), member threshold"
+            f" {self.member_threshold}, member indices 0-{len(self.shares) - 1}",
+        ]
+        if self.stance == "identical":
+            minted_indices = ", ".join(str(share.index) for share in self.minted)
+            lines += [
+                f"  minted:    member indices {minted_indices or '(none)'}"
+                " (identical to originally generated cards)",
+                "  NOTE: every produced card lies on the group's ORIGINAL member",
+                "    polynomial.  Nothing is replaced and nothing is revoked: every",
+                "    card ever issued for this group remains exactly as valid, and",
+                "    old and new cards freely combine.",
+            ]
+        elif self.stance == "augment":
+            lines += [
+                "  AUGMENT: the produced cards lie on a FRESH member polynomial.",
+                "    The old card set and the new card set are parallel encodings of",
+                "    the same group secret: each set independently satisfies the",
+                "    group, and every mixture of old and new cards is refused by the",
+                "    share digest.  The old cards remain a live path to the group",
+                "    secret until physically destroyed.",
+            ]
+        else:  # "revoke"
+            lines += [
+                "  REVOKE -- DESTRUCTION REQUIREMENT (software cannot destroy paper):",
+                "    the produced cards lie on a FRESH member polynomial, so every",
+                "    mixture of old and new cards is refused by the share digest --",
+                "    but the old cards among THEMSELVES still reach the group secret.",
+                f"    This revocation is real only once fewer than {threshold} (the",
+                "    original member threshold) original cards survive anywhere.",
+                f"    Account for every original card of group"
+                f" {self.grouping.group_index}; every leaked,",
+                "    copied or unaccounted-for card counts as surviving.  Destroy",
+                f"    original cards, witnessed, until fewer than {threshold} survive"
+                " in total.",
+                f"    The {len(self.used)} card(s) used in this ceremony (member"
+                f" indices {used_indices})",
+                "    are in the room: destroy them first.",
+            ]
+        return "\n".join(lines)
+
+
+def group_one_mnemonics(
+    mnemonics: Iterable[Union[str, Share]],
+    expand: Optional[int] = None,
+    member_threshold: Optional[int] = None,
+    member_count: Optional[int] = None,
+    revoke: bool = False,
+    strict: bool = False,
+) -> GroupCeremony:
+    """Perform a single-group ceremony: collect ONE group's sufficient threshold of
+    member mnemonics and either EXPAND the group (regenerate its ORIGINAL member
+    polynomial) or REISSUE it (a fresh member polynomial).  No other group's cards
+    are required, no master quorum is assembled, and the Encrypted Master Secret is
+    never reconstructed; the only secret ever held is the one group's own secret.
+
+    This is the counterpart of `group_ems_mnemonics`, which owns the ceremonies that
+    DO require a full quorum of groups and EMS recovery (master re-share, adding a
+    group, replacing a group with no surviving cards).
+
+    All scheme metadata is pinned from the provided cards -- identifier, extendable
+    flag, iteration exponent, group index, group threshold, group count -- so the
+    produced cards pool seamlessly with the scheme's untouched groups.
+
+    :param mnemonics: One group's member mnemonics (strings or `Share` objects); at
+        least the group's member threshold of consistent cards.  Extraneous or
+        corrupt cards are tolerated (unless `strict`), but the pool must resolve to
+        exactly ONE recoverable group secret.
+    :param expand: EXPAND ceremony -- regenerate the group's original member
+        polynomial out to this many cards (0 selects a sensible default).  Provided
+        cards reappear verbatim; missing or additional cards are minted exactly as
+        original generation would have.  Mutually exclusive with the reissue
+        parameters below.
+    :param member_threshold: REISSUE only -- the new member threshold (default:
+        unchanged).
+    :param member_count: REISSUE only -- the new member count (default: a sensible
+        count via the same rule as expand; state it explicitly in a real ceremony).
+    :param revoke: REISSUE only -- record the REVOKE stance: the old card set is to
+        be retired, and `report()` states the destruction requirement that makes the
+        revocation real.  Default is the AUGMENT stance: old and new card sets
+        remain parallel encodings of the group.  Refused for a group with member
+        threshold 1 (its card IS the group secret; escalate to a master re-share).
+    :param strict: Raise on any invalid mnemonic instead of ignoring it.
+    :return: A `GroupCeremony` -- the produced cards, the cards used, and the
+        ceremony `report()`.
+    :raises MnemonicError: with an actionable message when no group secret is
+        recoverable (which group, how many more cards are needed, or why the
+        provided cards are inconsistent), or when the pool resolves to more than one
+        group.
+
+    Ceremonies (G1 is a 3-of-5 group of a 2-of-3 scheme; `g1` its five mnemonics):
+
+    Lost card, believed unread (regenerate-identical; no master quorum)::
+
+        ceremony = group_one_mnemonics(g1[:2] + g1[3:], expand=5)
+        assert ceremony.minted[0].mnemonic() == g1[2]   # re-minted verbatim
+
+    Extend the existing card set (new cards combine with the old ones)::
+
+        ceremony = group_one_mnemonics(g1[:3], expand=7)
+
+    Revealed/copied card -- re-randomize and retire the old set::
+
+        ceremony = group_one_mnemonics(g1[:4], member_count=5, revoke=True)
+        print(ceremony.report())        # includes the destruction requirement
+
+    Departed member -- reissue with a resize (3-of-5 becomes 4-of-6)::
+
+        ceremony = group_one_mnemonics(
+            g1[:4], member_threshold=4, member_count=6, revoke=True
+        )
+
+    Parallel fresh card set, old set deliberately kept valid (AUGMENT)::
+
+        ceremony = group_one_mnemonics(g1[:3], member_count=5)
+
+    """
+    if expand is not None and (
+        member_threshold is not None or member_count is not None or revoke
+    ):
+        raise ValueError(
+            "expand regenerates the group's ORIGINAL member polynomial, so it cannot"
+            " change member_threshold/member_count or carry a reissue stance; omit"
+            " expand to reissue the group instead."
+        )
+
+    common_mnemonics = group_common_mnemonics(mnemonics, strict)
+
+    candidates: List[
+        Tuple[ShareCommonParameters, ShareGroupParameters, RawShare, ShareGroup]
+    ] = []
+    failures: List[str] = []
+    for common_params, sharegroups in common_mnemonics.items():
+        for grouping, sharegroup in sharegroups.items():
+            provided = len(sharegroup)
+            provided_indices = ", ".join(
+                str(index) for index in sorted(share.index for share in sharegroup)
+            )
+            recovered = recover_one_rawshares(grouping, sharegroup, complete=True)
+            if recovered:
+                for rawshare, usedgroup in recovered.items():
+                    candidates.append((common_params, grouping, rawshare, usedgroup))
+            elif provided < grouping.member_threshold:
+                failures.append(
+                    f"group {grouping.group_index}"
+                    f" ({grouping.member_threshold}-of-?):"
+                    f" {provided} member card(s) provided"
+                    f" (indices {provided_indices});"
+                    f" {grouping.member_threshold - provided} more required"
+                )
+            else:
+                failures.append(
+                    f"group {grouping.group_index}"
+                    f" ({grouping.member_threshold}-of-?):"
+                    f" {provided} member cards provided (indices {provided_indices})"
+                    f" but no {grouping.member_threshold}-card subset is"
+                    " digest-consistent; the cards are corrupt or from different"
+                    " splits (old and new cards of a reissued group cannot mix)"
+                )
+    if not candidates:
+        raise MnemonicError(
+            "No group secret is recoverable from the supplied mnemonics"
+            + (": " + "; ".join(failures) if failures else " (none provided)")
+            + "."
+        )
+    if len(candidates) > 1:
+        described = ", ".join(
+            f"group {grouping.group_index} ({grouping.member_threshold}-of-?,"
+            f" identifier {common_params.identifier})"
+            for common_params, grouping, _, _ in candidates
+        )
+        raise MnemonicError(
+            f"The supplied mnemonics resolve to {len(candidates)} distinct group"
+            f" secrets ({described}); group_one_mnemonics performs a ceremony on"
+            " exactly ONE group -- separate the card sets."
+        )
+
+    ((common_params, grouping, rawshare, usedgroup),) = candidates
+    used = tuple(sorted(usedgroup.shares, key=lambda share: share.index))
+    indices = [share.index for share in used]
+    threshold = grouping.member_threshold
+
+    if expand is not None:
+        # EXPAND: regenerate the ORIGINAL member polynomial.
+        desired = expand or _default_member_count(threshold, indices)
+        if desired > MAX_SHARE_COUNT:
+            raise ValueError(
+                f"The requested number of shares must not exceed {MAX_SHARE_COUNT}."
+            )
+        if threshold == 1 and desired > 1:
+            raise ValueError(
+                "Creating multiple member shares with member threshold 1 is not"
+                " allowed. Use 1-of-1 member sharing instead."
+            )
+        if desired <= max(indices):
+            raise MnemonicError(
+                f"Cannot expand group {grouping.group_index} to {desired} member"
+                f" card(s): member index {max(indices)} was provided; expand to at"
+                f" least {max(indices) + 1} cards, or reissue to restructure the"
+                " group."
+            )
+        if threshold == 1:
+            # A threshold-1 member "polynomial" is the group secret itself.
+            raw_shares: Sequence[RawShare] = _split_secret(1, desired, rawshare.data)
+        else:
+            raw_shares = _recover_secret_rawshares(
+                threshold, desired, usedgroup.to_raw_shares()
+            )
+        shares = _member_shares(
+            common_params, grouping.group_index, threshold, raw_shares
+        )
+        if not set(used) <= shares:
+            # Expanding a group must never produce incompatible mnemonics!
+            raise MnemonicError(
+                f"Expanding group {grouping.group_index} to {desired} Shares produced"
+                " incompatible mnemonics"
+            )
+        return GroupCeremony(
+            "expand",
+            "identical",
+            common_params,
+            grouping,
+            threshold,
+            used,
+            tuple(sorted(shares, key=lambda share: share.index)),
+        )
+
+    # REISSUE: split the group secret onto a FRESH random member polynomial.
+    if revoke and threshold == 1:
+        raise MnemonicError(
+            f"Cannot revoke group {grouping.group_index}: with member threshold 1"
+            " the card IS the group secret, and every reissue reproduces it"
+            " verbatim.  Treat the group secret itself as compromised and escalate"
+            " to a master-level re-share of all groups (recover the EMS via"
+            " recover_ems/group_ems_mnemonics and split_ems a fresh encoding)."
+        )
+    new_threshold = threshold if member_threshold is None else member_threshold
+    new_count = (
+        _default_member_count(new_threshold, indices)
+        if member_count is None
+        else member_count
+    )
+    if new_threshold == 1 and new_count > 1:
+        raise ValueError(
+            "Creating multiple member shares with member threshold 1 is not allowed."
+            " Use 1-of-1 member sharing instead."
+        )
+    raw_shares = _split_secret(new_threshold, new_count, rawshare.data)
+    if _recover_secret(new_threshold, raw_shares[:new_threshold]) != rawshare.data:
+        raise MnemonicError(
+            f"Reissue of group {grouping.group_index} self-check failed: the fresh"
+            " cards do not reproduce the group secret"
+        )
+    shares = _member_shares(
+        common_params, grouping.group_index, new_threshold, raw_shares
+    )
+    return GroupCeremony(
+        "reissue",
+        "revoke" if revoke else "augment",
+        common_params,
+        grouping,
+        new_threshold,
+        used,
+        tuple(sorted(shares, key=lambda share: share.index)),
+    )
+
+
 def decode_mnemonics(mnemonics: Iterable[str]) -> Dict[int, ShareGroup]:
     common_params: Set[ShareCommonParameters] = set()
     groups: Dict[int, ShareGroup] = {}

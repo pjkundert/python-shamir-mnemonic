@@ -3,10 +3,12 @@
 from .cipher import decrypt, encrypt
 from .shamir import (
     EncryptedMasterSecret,
+    GroupCeremony,
     combine_mnemonics,
     decode_mnemonics,
     generate_mnemonics,
     group_ems_mnemonics,
+    group_one_mnemonics,
     recover_ems,
     split_ems,
 )
@@ -20,9 +22,11 @@ __all__ = [
     "decode_mnemonics",
     "generate_mnemonics",
     "group_ems_mnemonics",
+    "group_one_mnemonics",
     "split_ems",
     "recover_ems",
     "EncryptedMasterSecret",
+    "GroupCeremony",
     "MnemonicError",
     "Share",
 ]
