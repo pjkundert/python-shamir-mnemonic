@@ -1,0 +1,356 @@
+#+TITLE: Organizational Ceremonies for SLIP-39 Group-of-Groups Custody
+#+AUTHOR: (custody engineering)
+#+OPTIONS: toc:2 num:t ^:nil
+
+* Purpose and scope
+
+SLIP-39 splits an encrypted master secret (EMS) across GROUPS, and each group's
+secret across MEMBER cards.  The cryptography answers exactly one question: which
+subsets of cards reconstruct which secrets.  It says nothing about people leaving,
+cards being photographed, offices burning down, or boards being reorganized.  Those
+are ORGANIZATIONAL failure modes, and surviving them requires ceremonies -- scripted
+procedures in which the math does what math can do, and the checklist does the rest.
+
+This document is written as an aviation-style checklist set.  Each failure mode is
+classified NORMAL / ABNORMAL / EMERGENCY, and each ceremony states its
+preconditions, its steps, what the mathematics guarantees, what ONLY procedure
+guarantees, and the executable test that demonstrates it
+(=test_org_ceremonies.py=).  The tests are the ceremony scripts; run them.
+
+Reference scheme used throughout:
+
+#+begin_example
+  group_threshold 2 of 3 groups
+    G0 "Execs"  2 of 3 member cards
+    G1 "Board"  3 of 5 member cards
+    G2 "Vault"  2 of 2 member cards
+#+end_example
+
+* The custody object model
+
+- master secret :: the wallet seed.  Never appears in any ceremony below.
+- EMS :: the master secret encrypted (Feistel/PBKDF2) under the passphrase.  All
+  splitting and all ceremonies operate on the EMS ciphertext; the passphrase is
+  never requested.
+- group polynomial :: degree =group_threshold - 1= polynomial over GF(256) whose
+  point at x=255 is the EMS ciphertext; group i's GROUP SECRET is its point at x=i.
+- member polynomial :: per-group polynomial whose x=255 point is that group's
+  secret; each member card is one point on it.  A 4-byte HMAC digest of the secret
+  is embedded at x=254, so recovery REFUSES point sets that do not lie on one
+  consistent polynomial.
+- metadata :: every card carries (identifier, extendable flag, iteration exponent,
+  group index, group threshold, group count, member index, member threshold).
+  Cards with mismatched common metadata refuse to pool at all.
+
+Two facts drive every ceremony below:
+
+1. A group's secret is a FIXED point of the scheme.  Any re-issue of a group must
+   preserve it (that is what keeps new cards combinable with untouched groups), and
+   therefore no group-local ceremony can ever CHANGE it.
+2. The member polynomial is FREE.  Re-splitting the same group secret onto a fresh
+   random polynomial yields brand-new cards that interoperate with every other
+   group, while the digest check rejects any mixture of old and new cards.
+
+* What the math guarantees vs what only procedure guarantees
+
+| Guarantee                                                   | Source    |
+|-------------------------------------------------------------+-----------|
+| < threshold cards reveal nothing about the secret            | math      |
+| Mixed old/new cards of a re-issued group are refused (digest)| math      |
+| Mismatched metadata refuses to pool                          | math      |
+| Re-issued group still combines with untouched groups         | math      |
+| Old cards among THEMSELVES keep working after re-issue       | math (!)  |
+| Old cards cease to exist                                     | PROCEDURE |
+| The group secret in RAM during a ceremony is not exfiltrated | PROCEDURE |
+| The right people were in the room                            | PROCEDURE |
+
+The "(!)" row is the heart of every re-issue ceremony: Shamir sharing has no
+revocation primitive.  A superseded card set remains a valid quorum path until it
+is physically destroyed.  Every checklist therefore ends with DESTROY, and DESTROY
+is witnessed.
+
+* Lost vs revealed: regenerate-identical vs re-randomize
+
+The single most important distinction in this document.
+
+- LOST (card gone, believed unread) :: The information still exists in the world at
+  most in one place -- nowhere.  The correct tool is REGENERATE-IDENTICAL: recover
+  the group's original member polynomial from the surviving cards and re-mint the
+  missing card verbatim.  Cheap, group-local, changes nothing.  PR #51's =expand=
+  is exactly this tool.
+- REVEALED (card copied, photographed, or holder untrusted) :: The information
+  exists in unknown hands.  Regenerating identically would be useless (the
+  adversary already has it).  The correct tool is RE-RANDOMIZE: recover the group
+  SECRET (not the polynomial), split it onto a FRESH polynomial, and destroy every
+  old card.  The adversary's copy is then a point on a dead polynomial: it refuses
+  to combine with the new cards (digest), and its old partners no longer exist.
+
+Using the lost-card tool on a revealed card is a silent security failure: the tests
+demonstrate that =expand= reproduces the compromised card verbatim
+(=test_revealed_card_pr51_expand_is_not_revocation=).
+
+* Ceremony checklists
+
+** C1 -- LOST MEMBER CARD (ABNORMAL)
+
+Condition: one G1 card missing; no reason to believe it was read.  Surviving
+members N-1 >= member threshold T.
+
+Preconditions:
+- EITHER the group's surviving members (group-local path),
+- OR a full master quorum of groups (PR #51 =expand= path).
+
+Ceremony:
+1. RECOVER -- assemble surviving members on the air-gapped machine.
+2. RE-MINT -- regenerate the ORIGINAL member polynomial and re-mint the missing
+   card verbatim (=expand=, or =_recover_secret_rawshares= group-locally).
+3. VERIFY -- re-minted card + T-1 surviving cards recover the group secret.
+4. RECORD -- log serials/custodians; no destruction required (nothing superseded).
+
+Math guarantees: the re-minted card is byte-identical; nothing else changes.
+Procedure guarantees: the judgment call that the card was LOST, not REVEALED.  If
+in doubt, run C2 instead -- C2 strictly dominates C1 in safety, costing only the
+re-distribution of the group's cards.
+
+Test: =test_org_ceremonies.py::test_lost_member_card_regeneration=
+
+** C2 -- REVEALED / COPIED MEMBER CARD (ABNORMAL) -- the key ceremony
+
+Condition: one G1 card suspected copied, photographed, or its holder no longer
+trusted.  Surviving sound members N-1 >= member threshold T (here 4 >= 3).
+
+Preconditions:
+- The N-1 sound members of G1, physically assembled.
+- Air-gapped machine, wiped storage, no radios.
+- A quorum-external witness with the checklist.
+- G0 and G2 are NOT summoned and their cards are NOT touched.
+
+Ceremony:
+1. RECOVER -- the N-1 members enter their cards; recover G1's GROUP SECRET alone
+   (=group_common_mnemonics= + =recover_group_rawshares=).  Neither other groups
+   nor the master secret are involved.
+2. RE-SPLIT -- split the group secret onto a FRESH random member polynomial into N
+   (or more) new cards, with ALL metadata pinned: identifier, extendable flag,
+   iteration exponent, group index, group threshold, group count.  Member
+   threshold/count may change (see C3).
+3. VERIFY -- on the same machine: (a) any T new cards recover the same group
+   secret; (b) new cards + one untouched group's cards recover the master secret;
+   (c) the compromised card + T-1 new cards is REFUSED (digest).
+4. DESTROY -- burn/shred ALL old G1 cards present, witnessed.  The compromised
+   card, wherever it is, has now lost every partner below threshold.
+5. DISTRIBUTE -- issue new cards; wipe the machine; log the ceremony.
+
+Math guarantees:
+- New cards + untouched G0/G2 recover the master secret (group secret preserved).
+- Any old+new mixture is refused: digest failure on cross-polynomial sets, or
+  duplicate-index refusal when member indices collide.
+- The compromised card alone (or with any sub-threshold set) reveals nothing.
+
+Procedure guarantees:
+- Step 4 (DESTROY) is what actually strands the compromised card: mathematically,
+  the old cards among themselves would STILL form a quorum (asserted in the test).
+- The group secret exists in RAM during steps 1-3.  That is the ceremony's hazard
+  window: the air gap, the wipe, and the witness control it.  Note that even full
+  exposure of this one group secret does not expose the master secret (1 <
+  group_threshold) -- but it would force escalation to C6.
+- No single party sees more than their own cards; the machine, not a person,
+  holds the transient group secret.
+
+Test: =test_org_ceremonies.py::test_revealed_member_card_reissue_ceremony=
+Also: =test_recover_single_group_secret_isolated= (step 1 in isolation),
+=test_digest_rejects_mixed_polynomials= (the refusal mechanism itself).
+
+** C3 -- DEPARTED MEMBER (NORMAL)
+
+Condition: a G1 member leaves the organization (planned or unplanned).  Treat the
+departed card as REVEALED regardless of whether it was returned: run C2, optionally
+resizing the group.
+
+Ceremony: identical to C2, with step 2 choosing a new member count (e.g. 5 -> 6 to
+seat a successor plus a spare) and/or a new member threshold (e.g. 3 -> 4).  Member
+threshold and count are group-local metadata; changing them does not disturb any
+other group.
+
+Math guarantees: as C2, plus the new threshold is enforced (3 new cards of a 4-of-6
+re-issue are refused).
+
+Test: =test_org_ceremonies.py::test_departed_member_reissue_with_extension=
+
+** C4 -- LOST ENTIRE GROUP (ABNORMAL)
+
+Condition: all of G1's cards destroyed or unreachable (site disaster).  Remaining
+groups >= group_threshold (here G0, G2 = 2).
+
+Preconditions: member quorums of group_threshold surviving groups, assembled.
+
+Ceremony:
+1. RECOVER -- surviving groups each recover their own group secret; interpolate
+   the group polynomial to regenerate G1's group secret (it is forced by the
+   surviving points -- this is the same math that recovers the EMS).
+2. RE-ISSUE -- split G1's secret onto a fresh member polynomial (full 3-of-5
+   replacement), or use PR #51's =expand=[(1, 1)]= to mint a single-card
+   replacement group.
+3. VERIFY -- new G1 cards + each surviving group recover the master secret.
+4. RECORD -- there is nothing to destroy; the old cards are (believed) gone.
+
+WARNING -- non-revocation: this ceremony restores AVAILABILITY only.  The old
+group secret cannot change, and the fresh member polynomial only prevents old/new
+MIXTURES.  If the "lost" cards resurface in sufficient number, they still work
+(asserted in the test).  If the loss could plausibly be theft, classify the group
+secret as compromised and escalate to C6.
+
+This step necessarily reconstructs the EMS-bearing group polynomial: unlike C2,
+the ceremony momentarily holds master-level material (the EMS ciphertext -- still
+not the master secret, and still no passphrase).  Stage it with C6-level controls.
+
+Test: =test_org_ceremonies.py::test_lost_group_replacement=
+
+** C5 -- AUTHORITY CHANGE: ADD A GROUP (NORMAL)
+
+Condition: governance adds a custody arm (e.g. a fourth group).  Existing groups
+must keep working.
+
+Reality check: =group_count= is baked into every card's metadata, and cards with
+different common metadata refuse to pool.  A true in-place addition is impossible.
+The supported ceremony creates a PARALLEL ENCODING of the same EMS:
+
+1. RECOVER -- a quorum recovers the EMS (=decode_mnemonics= + =recover_ems=).
+   Ciphertext only; no passphrase; master secret never decrypted.
+2. RE-ENCODE -- =split_ems= with the enlarged group list (fresh group polynomial,
+   fresh member polynomials, same identifier/flags).
+3. VERIFY -- new-encoding quorums (including ones using the new group) recover the
+   same ciphertext / master secret; old cards still work among themselves; old and
+   new cards refuse to mix (group_count differs).
+4. TRANSITION -- either encoding is now a complete custody structure.  If the old
+   structure must end, destroy old cards ceremony-wide (witnessed); until then BOTH
+   are live quorum paths, and the org must track both.
+
+Out-of-spec note: mathematically the group polynomial extends past =group_count= --
+a "phantom" group-3 share can be crafted at the raw level that combines with the
+ORIGINAL cards (demonstrated in the test).  PR #51's =expand= deliberately refuses
+to mint shares for =group_index >= group_count=, and other SLIP-39 implementations
+may reject such cards.  Do not build procedure on it; it is documented so that
+nobody mistakes it for a supported extension mechanism.
+
+Test: =test_org_ceremonies.py::test_add_group_authority_change=
+
+** C6 -- COMPROMISED GROUP SECRET (EMERGENCY)
+
+Condition: >= member_threshold of G1's cards copied, or the group secret otherwise
+assumed exposed.  Fewer than group_threshold group secrets exposed in total (so the
+master secret itself is still information-theoretically safe).
+
+Preconditions: member quorums of group_threshold groups; C2-style staging with the
+strictest controls (this ceremony reconstructs master-level material).
+
+Ceremony:
+1. RECOVER -- quorum recovers the EMS.  Ciphertext only; no passphrase.
+2. RE-SHARE -- re-encode EVERY group: fresh group polynomial, fresh member
+   polynomials, and (extendable schemes) a NEW identifier so old and new cards are
+   visibly and mechanically distinct.
+3. VERIFY -- passphrase-free: new-quorum =recover_ems= yields the identical
+   ciphertext.  (A single decrypt against a known fingerprint may be added as
+   ground truth, at the cost of touching the master secret.)
+4. DESTROY -- all old cards of ALL groups, witnessed.  Until this completes, the
+   old encoding remains a live quorum path.
+5. DISTRIBUTE -- new cards to all groups; log.
+
+Math guarantees:
+- The exposed G1 group secret is worthless against the new encoding: the new group
+  polynomial is fresh, so new-G1's secret is a different value entirely.
+- Old and new cards refuse to mix (identifier differs).
+- No on-chain key movement: the master secret never moved, and the adversary's
+  knowledge (one group secret, sub-group-threshold) never sufficed to derive it.
+
+Procedure guarantees: step 4, as always.  Old cards among themselves still work
+until destroyed (asserted in the test).
+
+Extendable-flag note: with =extendable=True= the ciphertext is
+identifier-independent, so the identifier rotates without the passphrase.  With
+=extendable=False= the identifier is bound into the KDF; rotating it requires
+decrypting the master secret (passphrase present, plaintext in RAM) and
+re-encrypting.  For organizational custody, create schemes extendable.
+
+ESCALATION -- if >= group_threshold group secrets are (or may be) exposed, the
+master secret must be presumed exposed.  No share ceremony helps: move the funds
+on-chain to a fresh master secret, then stand up a new scheme.  This is the only
+failure mode in this document that leaves the ceremony room.
+
+Test: =test_org_ceremonies.py::test_compromised_group_master_reshare=
+
+* Revocation summary
+
+| Failure mode              | Class     | Ceremony | Revocation achieved                                    |
+|---------------------------+-----------+----------+--------------------------------------------------------|
+| Lost member card          | ABNORMAL  | C1       | none needed (regenerate-identical)                     |
+| Revealed member card      | ABNORMAL  | C2       | card stranded: refused with new set, partners destroyed|
+| Departed member           | NORMAL    | C3       | as C2, plus threshold/count change                     |
+| Lost entire group         | ABNORMAL  | C4       | NONE -- availability only; escalate if possibly theft  |
+| Add a group               | NORMAL    | C5       | none intended; old encoding retired only by destruction|
+| Compromised group secret  | EMERGENCY | C6       | group secret rotated; old cards stranded after destroy |
+| >= group_threshold secrets| EMERGENCY | on-chain | not achievable in shares; move funds                   |
+
+In every row, "stranded"/"retired" is the joint product of a math refusal (digest,
+metadata) and a procedural destruction.  Neither alone suffices.
+
+* PR #51 API surface and gaps
+
+What the PR #51 branch (=feature/group_ems_mnemonics=) provides:
+
+- =group_ems_mnemonics(mnemonics, strict, complete, expand)= -- pool arbitrary
+  mnemonics; cluster by common metadata; recover every reachable EMS while
+  tolerating corrupt, redundant, and decoy shares; optionally =expand= groups.
+- =expand=[(g, n)]= -- regenerate group g's ORIGINAL member polynomial and mint up
+  to n member cards (identical to what the original generation would have produced,
+  proven against committed vectors), or with n=1 mint a single-card REPLACEMENT for
+  any group -- including one with no surviving cards -- from a master quorum.
+- =group_common_mnemonics= + =recover_group_rawshares= -- the group-local combine:
+  recover a single group's secret from its member cards alone (used by C2 step 1).
+- =_recover_secret_rawshares= -- inverse of the split: recover ALL original raw
+  shares of a polynomial (the engine under =expand=).
+- Metadata pinning -- the public =Share= dataclass constructor accepts every
+  metadata field, so ceremony-built cards carry exact scheme parameters.
+
+Gaps found while scripting the ceremonies (each worked around in the tests):
+
+1. No public FRESH re-split of a single group.  =expand= is regenerate-identical
+   by design; the revealed-card ceremony (C2) needs re-randomize.  The tests reach
+   for the private =_split_secret= plus the =Share= constructor.  A public
+   =reissue_group(mnemonics, member_threshold=None, member_count=None)= (the ~30
+   lines of =test_org_ceremonies.reissue_group=) would make C2/C3 first-class.
+2. =expand= requires a master quorum even for group-local regeneration.  A lost
+   card can be re-minted from the group's own survivors alone (C1's group-local
+   path), but only via the private =_recover_secret_rawshares=;
+   =group_ems_mnemonics(expand=...)= insists on recovering an EMS first.
+3. Silent refusal in =recover_group_rawshares=.  An incomplete or inconsistent
+   group yields nothing rather than raising; ceremony tooling must convert the
+   silence into an explicit refusal (see =group_secret_of= in the tests).
+4. Multi-card replacement of a LOST group is unsupported.  =expand= replaces a
+   lost group only as 1-of-1; a fresh 3-of-5 replacement needs the private
+   primitives (C4 path (b)).  =strict=True= correctly reports the limitation.
+5. Guard rails are otherwise sound: =expand= refuses =group_index >= group_count=,
+   refuses shrinking below threshold, refuses (under =strict=) obsoleting provided
+   multi-card groups with 1-of-1 replacements.
+
+None of these gaps required modifying library code; the ceremonies are expressible
+with the shipped primitives, at the cost of two private-function imports.
+
+* Test map
+
+All tests deterministic (seeded PRNG through the =RANDOM_BYTES= hook); each asserts
+both required recoveries and required refusals (=MnemonicError=).
+
+| Test (test_org_ceremonies.py)                       | Demonstrates                          |
+|-----------------------------------------------------+---------------------------------------|
+| test_baseline_scheme_recovers                       | reference scheme quorums and refusals |
+| test_recover_single_group_secret_isolated           | C2 step 1: group-local combine        |
+| test_revealed_member_card_reissue_ceremony          | C2 end-to-end                         |
+| test_revealed_card_pr51_expand_is_not_revocation    | lost-vs-revealed distinction          |
+| test_lost_member_card_regeneration                  | C1 (both paths)                       |
+| test_departed_member_reissue_with_extension         | C3 (resize 3/5 -> 4/6)                |
+| test_lost_group_replacement                         | C4 + non-revocation warning           |
+| test_add_group_authority_change                     | C5 + phantom-group caveat             |
+| test_compromised_group_master_reshare               | C6 end-to-end                         |
+| test_digest_rejects_mixed_polynomials               | the refusal mechanism itself          |
+
+Run: =make nix-venv-test= (or =pytest= inside the project venv).
