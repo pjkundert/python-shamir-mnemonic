@@ -24,7 +24,12 @@ from typing import List, Optional, Tuple
 import pytest
 
 import shamir_mnemonic as shamir
-from shamir_mnemonic import EncryptedMasterSecret, MnemonicError, Share
+from shamir_mnemonic import (
+    EncryptedMasterSecret,
+    MnemonicError,
+    Share,
+    group_one_mnemonics,
+)
 from shamir_mnemonic.shamir import (
     RawShare,
     _recover_secret,
@@ -60,11 +65,12 @@ def scheme(det_random) -> List[List[str]]:
 
 
 # ---------------------------------------------------------------------------
-# Ceremony primitives (test-local helpers over the PR #51 / library API).
+# Ceremony primitives (test-local helpers over the library primitives).
 #
-# These are deliberately NOT added to the library: they document exactly which public
-# primitives a ceremony needs, and where the current API falls short (see the org
-# document's "API gaps" section).
+# The ceremonies themselves now run through the public group_one_mnemonics API.
+# These helpers remain as the PRIVATE-PRIMITIVE reference constructions: the
+# regression cross-check tests assert that the public API's output is exactly what
+# the low-level construction produces (see test_group_one_matches_private_*).
 # ---------------------------------------------------------------------------
 
 
@@ -90,8 +96,10 @@ def group_secret_of(
     possibles = recover_group_rawshares(sharegroups)
     if grouping.group_index not in possibles:
         # NOTE (API behavior): recover_group_rawshares is non-strict -- an incomplete
-        # or inconsistent group yields NOTHING rather than raising.  The ceremony
-        # turns that silence into an explicit refusal.
+        # or inconsistent group yields NOTHING rather than raising (it is the pool
+        # feeding EMS recovery).  This helper turns the silence into a refusal; the
+        # public group_one_mnemonics raises an actionable error instead (see
+        # test_group_one_actionable_errors).
         raise MnemonicError(
             f"Group {grouping.group_index} secret not recoverable from the "
             f"{len(member_mnemonics)} member cards provided"
@@ -112,9 +120,10 @@ def reissue_group(
 
     Member threshold and count may be changed (departed-member / extension variants).
 
-    NOTE: the fresh split requires the private _split_secret; PR #51's public
-    'expand' path only regenerates the ORIGINAL polynomial (see the org document,
-    "API gaps").
+    NOTE: this is the private-primitive REFERENCE construction (_split_secret plus
+    the pinned Share constructor).  The ceremonies use the public equivalent,
+    group_one_mnemonics(..., member_threshold=..., member_count=...);
+    test_group_one_matches_private_reissue asserts the two are identical.
     """
     common_params, grouping, secret = group_secret_of(member_mnemonics)
     if member_threshold is None:
@@ -215,8 +224,13 @@ def test_revealed_member_card_reissue_ceremony(scheme):
     compromised = g1[4]  # the suspect card (member index 4)
     remaining = g1[:4]  # the 4 sound members; 4 >= member_threshold 3
 
-    # RECOVER + RE-SPLIT: same 3-of-5 structure, fresh polynomial.
-    new_g1 = reissue_group(remaining, member_threshold=3, member_count=5)
+    # RECOVER + RE-SPLIT: same 3-of-5 structure, fresh polynomial, REVOKE stance.
+    # One public call; only G1's own cards are supplied.
+    ceremony = group_one_mnemonics(remaining, member_count=5, revoke=True)
+    assert (ceremony.ceremony, ceremony.stance) == ("reissue", "revoke")
+    assert [share.mnemonic() for share in ceremony.used] == remaining
+    assert "DESTRUCTION REQUIREMENT" in ceremony.report()
+    new_g1 = ceremony.mnemonics()
     assert len(new_g1) == 5
 
     # Metadata is pinned: every new card carries the same group parameters as the
@@ -291,6 +305,14 @@ def test_revealed_card_pr51_expand_is_not_revocation(scheme):
     assert recovered[1] == set(g1)
     assert compromised in recovered[1]
 
+    # The group-local public expand is the same tool (by design): it regenerates the
+    # ORIGINAL member polynomial, compromised card included -- and says so.
+    ceremony = group_one_mnemonics(remaining, expand=5)
+    assert (ceremony.ceremony, ceremony.stance) == ("expand", "identical")
+    assert set(ceremony.mnemonics()) == set(g1)
+    assert compromised in ceremony.mnemonics()
+    assert "Nothing is replaced and nothing is revoked" in ceremony.report()
+
 
 # ---------------------------------------------------------------------------
 # Broader failure modes
@@ -301,10 +323,12 @@ def test_lost_member_card_regeneration(scheme):
     """Lost (not revealed) member card, group still at/above threshold: the group
     keeps working, and the identical card can be regenerated.
 
-    Two paths:
+    Three paths:
       (a) PR #51 expand -- public API, but needs a master-quorum pool of mnemonics;
-      (b) group-local -- only G1's members assemble, but needs the private
-          _recover_secret_rawshares (documented API gap).
+      (b) group-local PUBLIC path -- group_one_mnemonics(expand=...): only G1's
+          members assemble, no master quorum (the gap the new API closes);
+      (c) group-local private-primitive construction -- kept as the regression
+          cross-check that the public API's output equals it.
     """
     g0, g1, g2 = scheme
     lost = g1[2]
@@ -321,8 +345,16 @@ def test_lost_member_card_regeneration(scheme):
     assert lost in recovered[1]
     assert recovered[1] == set(g1)
 
-    # (b) Group-local path: the 4 members alone recover ALL 5 original member
-    # RawShares and re-mint the lost card verbatim -- no other group assembles.
+    # (b) Group-local PUBLIC path: the 4 members alone re-mint the lost card
+    # verbatim -- no other group assembles, no master quorum, no EMS.
+    ceremony = group_one_mnemonics(remaining, expand=5)
+    assert (ceremony.ceremony, ceremony.stance) == ("expand", "identical")
+    assert set(ceremony.mnemonics()) == set(g1)
+    assert [share.mnemonic() for share in ceremony.minted] == [lost]
+
+    # (c) Private-primitive cross-check: the 4 members' RawShares recover ALL 5
+    # original member RawShares; the re-minted card equals the lost card AND the
+    # public API's output.
     proto = Share.from_mnemonic(remaining[0])
     all_raw = _recover_secret_rawshares(
         proto.member_threshold, 5, [member_raw(m) for m in remaining]
@@ -340,6 +372,7 @@ def test_lost_member_card_regeneration(scheme):
         lost_value,
     ).mnemonic()
     assert reminted == lost
+    assert reminted in ceremony.mnemonics()
 
 
 def test_departed_member_reissue_with_extension(scheme):
@@ -349,7 +382,12 @@ def test_departed_member_reissue_with_extension(scheme):
     departed = g1[1]
     remaining = g1[:1] + g1[2:]  # 4 members remain, >= old threshold 3
 
-    new_g1 = reissue_group(remaining, member_threshold=4, member_count=6)
+    ceremony = group_one_mnemonics(
+        remaining, member_threshold=4, member_count=6, revoke=True
+    )
+    assert (ceremony.ceremony, ceremony.stance) == ("reissue", "revoke")
+    assert ceremony.member_threshold == 4
+    new_g1 = ceremony.mnemonics()
     assert len(new_g1) == 6
 
     # Only member_threshold changed in the group parameters; all scheme-level
@@ -378,8 +416,12 @@ def test_lost_group_replacement(scheme):
 
     (a) PR #51 headline path: expand=[(1, 1)] replaces the lost 3-of-5 group with a
         new 1-of-1 card, from the other groups' cards alone.
-    (b) Full-structure replacement (3-of-5 again, fresh member polynomial) via the
-        private group-level primitives.
+    (b) Full-structure replacement (3-of-5 again, fresh member polynomial) by
+        COMPOSITION of the two public APIs: group_ems_mnemonics mints the 1-of-1
+        replacement card (master quorum), then group_one_mnemonics reissues that
+        1-of-1 as a fresh 3-of-5 (the 1-of-1 card IS the group secret -- destroy it
+        with the ceremony's working material).  The private group-polynomial
+        interpolation is kept as a cross-check.
 
     Re-issue after LOSS restores availability only: the group secret at x=1 is fixed
     by interpolation, so IF the lost cards are ever found, they still work (asserted
@@ -410,9 +452,17 @@ def test_lost_group_replacement(scheme):
     with pytest.raises(MnemonicError):
         list(shamir.group_ems_mnemonics(g0 + g2, expand=[(1, 5)], strict=True))
 
-    # (b) Full-structure replacement: recover G0 and G2 group secrets from their own
-    # members, interpolate the group polynomial to regenerate G1's group secret,
-    # and split it onto a fresh 3-of-5 member polynomial.
+    # (b) Full-structure replacement by public-API composition: the 1-of-1
+    # replacement card minted in (a) is one point carrying G1's group secret;
+    # group_one_mnemonics reissues it as a fresh 3-of-5 with all metadata pinned.
+    ceremony = group_one_mnemonics([replacement], member_threshold=3, member_count=5)
+    assert (ceremony.ceremony, ceremony.stance) == ("reissue", "augment")
+    new_g1 = ceremony.mnemonics()
+    assert len(new_g1) == 5
+
+    # Cross-check (private primitives): recover G0 and G2 group secrets from their
+    # own members and interpolate the group polynomial; the regenerated G1 group
+    # secret necessarily equals the original -- and the reissued cards carry it.
     common_params, _, secret_g0 = group_secret_of(g0)
     _, _, secret_g2 = group_secret_of(g2)
     group_raw = _recover_secret_rawshares(
@@ -421,23 +471,9 @@ def test_lost_group_replacement(scheme):
         [RawShare(0, secret_g0), RawShare(2, secret_g2)],
     )
     (secret_g1,) = [value for index, value in group_raw if index == 1]
-    # The regenerated group secret necessarily equals the original:
     assert secret_g1 == group_secret_of(g1)[2]
+    assert secret_g1 == group_secret_of(new_g1)[2]
 
-    new_g1 = [
-        Share(
-            common_params.identifier,
-            common_params.extendable,
-            common_params.iteration_exponent,
-            1,
-            common_params.group_threshold,
-            common_params.group_count,
-            index,
-            3,
-            value,
-        ).mnemonic()
-        for index, value in _split_secret(3, 5, secret_g1)
-    ]
     assert shamir.combine_mnemonics(new_g1[:3] + g0[:2]) == MS
     assert shamir.combine_mnemonics(new_g1[2:] + g2) == MS
 
@@ -597,3 +633,210 @@ def test_digest_rejects_mixed_polynomials(det_random):
     # Colliding member indices are refused outright.
     with pytest.raises(MnemonicError, match="unique"):
         _recover_secret(3, [split_a[0], split_b[0], split_b[1]])
+
+
+# ---------------------------------------------------------------------------
+# The group_one_mnemonics API surface
+# ---------------------------------------------------------------------------
+
+
+def test_group_one_expand_group_local(scheme):
+    """Group-local EXPAND: G1's members alone (no master quorum, no EMS) regenerate
+    the ORIGINAL member polynomial -- re-minting missing cards verbatim and minting
+    additional ones that freely combine with the old cards."""
+    g0, g1, g2 = scheme
+
+    # Exactly the member threshold of cards suffices; extend 3-of-5 to 3-of-7.
+    ceremony = group_one_mnemonics(g1[:3], expand=7)
+    assert (ceremony.ceremony, ceremony.stance) == ("expand", "identical")
+    assert ceremony.member_threshold == 3
+    extended = ceremony.mnemonics()
+    assert len(extended) == 7
+    # The first five cards are the original G1 cards, verbatim.
+    assert extended[:5] == g1
+    # Old and new cards MIX freely -- same polynomial (contrast with a reissue).
+    assert shamir.combine_mnemonics([extended[5], extended[6], g1[0]] + g0[:2]) == MS
+    # The extra cards carry the same pinned group parameters.
+    old_params = Share.from_mnemonic(g1[0]).group_parameters()
+    for mnemonic in extended:
+        assert Share.from_mnemonic(mnemonic).group_parameters() == old_params
+
+    # expand=0 selects the sensible default: max(2 * threshold, highest index + 1).
+    ceremony = group_one_mnemonics(g1[:4], expand=0)
+    assert len(ceremony.shares) == 6
+    assert ceremony.mnemonics()[:5] == g1
+
+    # Refusals: cannot "expand" below a provided member index (restructuring is a
+    # reissue), and cannot exceed the SLIP-39 share-count limit.
+    with pytest.raises(MnemonicError, match="member index 4"):
+        group_one_mnemonics(g1, expand=3)
+    with pytest.raises(ValueError, match="must not exceed"):
+        group_one_mnemonics(g1[:3], expand=17)
+    # expand is regenerate-identical: it cannot restructure or carry a stance.
+    with pytest.raises(ValueError, match="reissue"):
+        group_one_mnemonics(g1[:3], expand=7, member_threshold=4)
+    with pytest.raises(ValueError, match="reissue"):
+        group_one_mnemonics(g1[:3], expand=7, revoke=True)
+
+
+def test_group_one_reissue_defaults(scheme):
+    """The simple task: hand group_one_mnemonics a threshold of one group's cards,
+    get that group refreshed -- a fresh member polynomial, metadata pinned, same
+    member threshold, a sensibly-defaulted member count."""
+    g0, g1, g2 = scheme
+
+    ceremony = group_one_mnemonics(g1[:4])
+    assert (ceremony.ceremony, ceremony.stance) == ("reissue", "augment")
+    assert ceremony.member_threshold == 3  # unchanged by default
+    new_g1 = ceremony.mnemonics()
+    assert len(new_g1) == 6  # default: max(2 * threshold, highest index + 1)
+    # A reissue mints ALL-new cards.
+    assert ceremony.minted == ceremony.shares
+    assert not set(new_g1) & set(g1)
+    # Pinned metadata: only the member index/value differ from the old cards.
+    old_params = Share.from_mnemonic(g1[0]).group_parameters()
+    for mnemonic in new_g1:
+        assert Share.from_mnemonic(mnemonic).group_parameters() == old_params
+    # The refreshed group combines with every untouched group.
+    assert shamir.combine_mnemonics(new_g1[:3] + g0[:2]) == MS
+    assert shamir.combine_mnemonics(new_g1[3:] + g2) == MS
+
+
+def test_group_one_reissue_resize(scheme):
+    """Reissue with member threshold and count changes (the departed-member resize),
+    exercised beyond the C3 ceremony: shrink the card count, and collapse to 1-of-1.
+    """
+    g0, g1, g2 = scheme
+
+    # 3-of-5 -> 2-of-3: fewer custodians, lower threshold.
+    ceremony = group_one_mnemonics(g1[:3], member_threshold=2, member_count=3)
+    new_g1 = ceremony.mnemonics()
+    assert len(new_g1) == 3 and ceremony.member_threshold == 2
+    assert shamir.combine_mnemonics(new_g1[:2] + g0[:2]) == MS
+    with pytest.raises(MnemonicError):
+        shamir.combine_mnemonics(new_g1[:1] + g0[:2])
+
+    # 3-of-5 -> 1-of-1: the single card IS the group secret (note the hazard).
+    ceremony = group_one_mnemonics(g1[2:], member_threshold=1, member_count=1)
+    (solo,) = ceremony.mnemonics()
+    assert Share.from_mnemonic(solo).member_threshold == 1
+    assert Share.from_mnemonic(solo).value == group_secret_of(g1)[2]
+    assert shamir.combine_mnemonics([solo] + g2) == MS
+
+    # A threshold-1 group cannot be multi-card (SLIP-39 rule).
+    with pytest.raises(ValueError, match="1-of-1"):
+        group_one_mnemonics(g1[:3], member_threshold=1, member_count=3)
+
+
+def test_group_one_augment_stance(scheme):
+    """AUGMENT stance: the old card set and the new card set are PARALLEL encodings
+    of the group -- each independently satisfies it, mixtures are refused."""
+    g0, g1, g2 = scheme
+
+    ceremony = group_one_mnemonics(g1[:3], member_count=5)  # augment is the default
+    assert ceremony.stance == "augment"
+    new_g1 = ceremony.mnemonics()
+
+    # Each encoding independently satisfies the group ...
+    assert shamir.combine_mnemonics(g1[:3] + g0[:2]) == MS
+    assert shamir.combine_mnemonics(new_g1[:3] + g0[:2]) == MS
+    assert shamir.combine_mnemonics(new_g1[2:] + g2) == MS
+    # ... and every old+new mixture is refused by the digest (or index collision).
+    with pytest.raises(MnemonicError):
+        shamir.combine_mnemonics([g1[0]] + new_g1[1:3] + g0[:2])
+    with pytest.raises(MnemonicError):
+        shamir.combine_mnemonics([new_g1[0]] + g1[1:3] + g0[:2])
+
+    # The report says exactly that.
+    report = ceremony.report()
+    assert "AUGMENT" in report
+    assert "parallel encodings" in report
+    assert "refused by the" in report and "digest" in report
+    assert "live path" in report  # old cards remain valid until destroyed
+
+
+def test_group_one_revoke_report(scheme):
+    """REVOKE stance: same cryptography as augment, plus the ceremony report that
+    states the destruction requirement making the revocation real."""
+    g0, g1, g2 = scheme
+
+    ceremony = group_one_mnemonics(g1[:4], member_count=5, revoke=True)
+    assert ceremony.stance == "revoke"
+    report = ceremony.report()
+
+    # The report identifies the scheme, the group, and what went in and came out.
+    common = Share.from_mnemonic(g1[0]).common_parameters()
+    assert f"identifier {common.identifier}" in report
+    assert "index 1" in report and "group threshold 2 of 3 groups" in report
+    assert "member threshold 3, member indices provided: 0, 1, 2, 3" in report
+    assert "5 card(s), member threshold 3, member indices 0-4" in report
+
+    # The destruction requirement is explicit and exact: software cannot destroy
+    # paper; fewer than member_threshold original cards may survive; leaked and
+    # unaccounted-for cards count as surviving; in-room cards are destroyed first.
+    assert "DESTRUCTION REQUIREMENT" in report
+    assert "software cannot destroy paper" in report
+    assert "old cards among THEMSELVES still reach the group secret" in report
+    assert "fewer than 3" in report
+    assert "unaccounted-for card counts as surviving" in report
+    assert "witnessed" in report
+    assert "member indices 0, 1, 2, 3" in report
+    assert "destroy them first" in report
+
+    # Revoking a 1-of-N group is impossible (its card IS the group secret) and is
+    # refused with an escalation pointer to the master-level re-share.
+    (only,) = shamir.generate_mnemonics(1, [(1, 1)], MS)
+    with pytest.raises(MnemonicError, match="escalate"):
+        group_one_mnemonics(only, revoke=True)
+
+
+def test_group_one_actionable_errors(scheme):
+    """The silent-refusal gap, closed: group_one_mnemonics explains what is missing
+    (which group, how many more cards) or why the provided cards are inconsistent.
+    """
+    g0, g1, g2 = scheme
+
+    # Below member threshold: which group, how many provided, how many more needed.
+    with pytest.raises(MnemonicError, match=r"group 1 \(3-of-\?\)") as excinfo:
+        group_one_mnemonics(g1[:2])
+    assert "2 member card(s) provided" in str(excinfo.value)
+    assert "1 more required" in str(excinfo.value)
+
+    # Sufficient count but inconsistent cards (old + reissued mixed): says so.
+    new_g1 = group_one_mnemonics(g1[:3], member_count=5).mnemonics()
+    with pytest.raises(MnemonicError, match="digest-consistent") as excinfo:
+        group_one_mnemonics([g1[0], g1[1], new_g1[2]])
+    assert "cannot mix" in str(excinfo.value)
+
+    # Multiple recoverable groups: refuse the ambiguity, name the groups.
+    with pytest.raises(MnemonicError, match="exactly ONE group") as excinfo:
+        group_one_mnemonics(g0 + g1[:3])
+    assert "group 0" in str(excinfo.value) and "group 1" in str(excinfo.value)
+
+    # Nothing usable at all.
+    with pytest.raises(MnemonicError, match="No group secret"):
+        group_one_mnemonics([])
+
+    # Invalid mnemonics: ignored by default (ceremony still succeeds around them),
+    # refused under strict.
+    ceremony = group_one_mnemonics(g1[:3] + ["not a mnemonic"], expand=5)
+    assert set(ceremony.mnemonics()) == set(g1)
+    with pytest.raises(Exception):
+        group_one_mnemonics(g1[:3] + ["not a mnemonic"], expand=5, strict=True)
+
+
+def test_group_one_matches_private_reissue(scheme, monkeypatch):
+    """Regression cross-check: the public reissue equals the private-primitive
+    reference construction (_split_secret + pinned Share constructor) draw-for-draw.
+    """
+    g0, g1, g2 = scheme
+
+    rng = random.Random(97)
+    monkeypatch.setattr(shamir.shamir, "RANDOM_BYTES", rng.randbytes)
+    ceremony = group_one_mnemonics(g1[:4], member_count=5)
+
+    rng = random.Random(97)  # identical entropy stream for the reference
+    monkeypatch.setattr(shamir.shamir, "RANDOM_BYTES", rng.randbytes)
+    reference = reissue_group(g1[:4], member_threshold=3, member_count=5)
+
+    assert ceremony.mnemonics() == reference
