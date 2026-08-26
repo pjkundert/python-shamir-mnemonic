@@ -418,6 +418,58 @@ def group_common_mnemonics(
     return common_params
 
 
+def recover_one_rawshares(
+    grouping: ShareGroupParameters,
+    sharegroup: ShareGroup,
+    complete: bool = False,
+) -> Dict[RawShare, ShareGroup]:
+    """Recover every group RawShare reachable from a SINGLE grouping's member Shares,
+    mapped to the ShareGroup of member Shares that recovers it.
+
+    A grouping's Shares usually yield one RawShare (the group secret), but a pool
+    polluted with corrupt cards, or with cards from parallel splits of the same
+    grouping parameters (decoys, or a re-issued card set), can yield several -- or
+    none.  Silence (an empty dict) means either the grouping is incomplete (fewer
+    Shares than its member threshold) or no member_threshold-sized subset is
+    digest-consistent; the caller decides whether that silence is an error
+    (`group_one_mnemonics` raises; the `group_ems_mnemonics` recovery pool skips).
+
+    With 'complete', keeps searching until every provided Share that lies on a
+    recovered secret's member polynomial is attributed to that secret's ShareGroup.
+    Consumes the supplied sharegroup's shares as they are attributed.
+
+    """
+    recovered: Dict[RawShare, ShareGroup] = {}
+    while sharegroup.is_complete():
+        for shareminimal in sharegroup.get_possible_groups():
+            try:
+                rawshare = RawShare(
+                    grouping.group_index,
+                    _recover_secret(
+                        grouping.member_threshold, shareminimal.to_raw_shares()
+                    ),
+                )
+            except Exception:
+                pass
+            else:
+                # We found (another?) minimal ShareGroup subset of sharegroup that leads to
+                # a RawShare.
+                group = recovered.setdefault(rawshare, shareminimal)
+                # Each time, remove one of its consituent mnemonic Shares, and continue
+                # looking to ensure 'complete' coverage; this will (eventually) find *all*
+                # mnemonic Shares that combine to yield each RawShare.
+                group.shares |= shareminimal.shares
+                if complete:
+                    sharegroup.shares.remove(next(iter(shareminimal.shares)))
+                else:
+                    sharegroup.shares -= shareminimal.shares
+                break
+        else:
+            # No RawShare ever found in all possible combinations of this grouping!  Give up.
+            break
+    return recovered
+
+
 def recover_group_rawshares(
     sharegroups: Dict[ShareGroupParameters, ShareGroup],
     complete: bool = False,
@@ -435,44 +487,28 @@ def recover_group_rawshares(
     decoy) SLIP-39 groups w/ the same common parameters could have been provided, and/or redundant
     mnemonics.
 
+    This is a recovery pool: an unusable grouping is silently skipped (recovery should
+    salvage whatever it can).  For a single-group ceremony that must instead explain
+    exactly what is missing, see `group_one_mnemonics`, which consumes
+    `recover_one_rawshares` directly and raises actionable errors.
+
     """
     possibles: Dict[int, Dict[RawShare, ShareGroup]] = {}
     for grouping, sharegroup in sharegroups.items():
-        while sharegroup.is_complete():
-            for shareminimal in sharegroup.get_possible_groups():
-                try:
-                    rawshare = RawShare(
-                        grouping.group_index,
-                        _recover_secret(
-                            grouping.member_threshold, shareminimal.to_raw_shares()
-                        ),
-                    )
-                except Exception:
-                    pass
-                else:
-                    # We found (another?) minimal ShareGroup subset of sharegroup that leads to
-                    # a RawShare.
-                    group = possibles.setdefault(
-                        # by SLIP-39 group indices
-                        rawshare.x,
-                        {},
-                    ).setdefault(
-                        # by recovered group RawShare
-                        rawshare,
-                        shareminimal,
-                    )
-                    # Each time, remove one of its consituent mnemonic Shares, and continue
-                    # looking to ensure 'complete' coverage; this will (eventually) find *all*
-                    # mnemonic Shares that combine to yield each RawShare.
-                    group.shares |= shareminimal.shares
-                    if complete:
-                        sharegroup.shares.remove(next(iter(shareminimal.shares)))
-                    else:
-                        sharegroup.shares -= shareminimal.shares
-                    break
-            else:
-                # No RawShare ever found in all possible combinations of this grouping!  Give up.
-                break
+        for rawshare, group in recover_one_rawshares(
+            grouping, sharegroup, complete
+        ).items():
+            existing = possibles.setdefault(
+                # by SLIP-39 group indices
+                rawshare.x,
+                {},
+            ).setdefault(
+                # by recovered group RawShare
+                rawshare,
+                group,
+            )
+            if existing is not group:
+                existing.shares |= group.shares
     return possibles
 
 
@@ -567,6 +603,33 @@ def group_ems_rawshares(
         raise MnemonicError("Invalid set of mnemonics; No encoded secret found")
 
 
+def _member_shares(
+    common_params: ShareCommonParameters,
+    group_index: int,
+    member_threshold: int,
+    rawshares: Iterable[RawShare],
+) -> Set[Share]:
+    """Mint member Shares from raw (member_index, value) points, pinning all
+    scheme-level metadata so the resulting cards pool with the scheme's other
+    groups: identifier, extendable flag, iteration exponent, group threshold and
+    group count from common_params, plus the given group index and member
+    threshold."""
+    return {
+        Share(
+            common_params.identifier,
+            common_params.extendable,
+            common_params.iteration_exponent,
+            group_index,
+            common_params.group_threshold,
+            common_params.group_count,
+            member_index,
+            member_threshold,
+            value,
+        )
+        for member_index, value in rawshares
+    }
+
+
 def expand_group(
     using: Dict[RawShare, ShareGroup],
     common_params: ShareCommonParameters,
@@ -610,22 +673,14 @@ def expand_group(
             # supplied shares, and then use them to produce any missing Shares.  This is
             # (group_threshold - 2) random RawShares at indices [0,group_threshold-2), plus
             # the group secret RawShare at index 255 and the digest RawShare at index 254.
-            shares = {
-                Share(
-                    common_params.identifier,
-                    common_params.extendable,
-                    common_params.iteration_exponent,
-                    group,
-                    common_params.group_threshold,
-                    common_params.group_count,
-                    member_index,
-                    grouping.member_threshold,
-                    value,
-                )
-                for member_index, value in _recover_secret_rawshares(
+            shares = _member_shares(
+                common_params,
+                group,
+                grouping.member_threshold,
+                _recover_secret_rawshares(
                     grouping.member_threshold, desired, sg.to_raw_shares()
-                )
-            }
+                ),
+            )
             if not sg.shares <= shares:
                 # Expanding a group must never produce incompatible mnemonics!
                 raise MnemonicError(
@@ -650,19 +705,9 @@ def expand_group(
                 using.keys(),
             ):
                 if group == group_index:
-                    shares = {
-                        Share(
-                            common_params.identifier,
-                            common_params.extendable,
-                            common_params.iteration_exponent,
-                            group,
-                            common_params.group_threshold,
-                            common_params.group_count,
-                            0,
-                            1,
-                            value,
-                        )
-                    }
+                    shares = _member_shares(
+                        common_params, group, 1, [RawShare(0, value)]
+                    )
                     rg = RawShare(group, value)
                     sg = using.setdefault(rg, ShareGroup())
                     if strict and not sg.shares <= shares:
